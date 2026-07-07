@@ -27,7 +27,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // Restore session from sessionStorage
     const saved = sessionStorage.getItem('amber_user')
     if (saved) {
       try { setUser(JSON.parse(saved)) } catch {}
@@ -40,13 +39,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .from('spoc_users')
       .select('*')
       .eq('emp_code', empCode.toUpperCase())
-      .eq('role', role)
       .single()
 
     if (error || !data) return { error: 'Employee Code not found.' }
-
-    // Simple password check (in production use bcrypt via API route)
     if (data.password !== password) return { error: 'Incorrect password.' }
+    if (data.role !== role) return { error: 'Invalid role for this account.' }
 
     const authUser: AuthUser = {
       id: data.id,
@@ -60,7 +57,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(authUser)
     sessionStorage.setItem('amber_user', JSON.stringify(authUser))
 
-    // Log session
     await supabase.from('audit_log').insert({
       user_name: data.name,
       emp_code: data.emp_code,
