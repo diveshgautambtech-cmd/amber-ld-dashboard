@@ -1,6 +1,6 @@
 'use client'
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
-import { supabase } from './supabase'
+import { createClient } from '@supabase/supabase-js'
 
 export type UserRole = 'admin' | 'spoc'
 
@@ -35,49 +35,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const login = async (empCode: string, password: string, role: UserRole) => {
-    const { data, error } = await supabase
-      .from('spoc_users')
-      .select('*')
-      .eq('emp_code', empCode.toUpperCase())
-      .single()
+    try {
+      const res = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ empCode: empCode.toUpperCase(), password, role })
+      })
+      const result = await res.json()
+      if (result.error) return { error: result.error }
 
-    if (error || !data) return { error: 'Employee Code not found.' }
-    if (data.password !== password) return { error: 'Incorrect password.' }
-    if (data.role !== role) return { error: 'Invalid role for this account.' }
-
-    const authUser: AuthUser = {
-      id: data.id,
-      empCode: data.emp_code,
-      name: data.name,
-      role: data.role,
-      branch: data.branch,
-      email: data.email,
+      const authUser: AuthUser = result.user
+      setUser(authUser)
+      sessionStorage.setItem('amber_user', JSON.stringify(authUser))
+      return {}
+    } catch (e) {
+      return { error: 'Connection error. Please try again.' }
     }
-
-    setUser(authUser)
-    sessionStorage.setItem('amber_user', JSON.stringify(authUser))
-
-    await supabase.from('audit_log').insert({
-      user_name: data.name,
-      emp_code: data.emp_code,
-      branch: data.branch,
-      role: data.role,
-      action: 'Login',
-    })
-
-    return {}
   }
 
-  const logout = async () => {
-    if (user) {
-      await supabase.from('audit_log').insert({
-        user_name: user.name,
-        emp_code: user.empCode,
-        branch: user.branch,
-        role: user.role,
-        action: 'Logout',
-      })
-    }
+  const logout = () => {
     setUser(null)
     sessionStorage.removeItem('amber_user')
   }
