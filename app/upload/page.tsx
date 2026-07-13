@@ -6,14 +6,38 @@ import { supabase } from '@/lib/supabase'
 import PageShell from '@/components/dashboard/PageShell'
 import * as XLSX from 'xlsx'
 
+// Read a cell by trying several possible header spellings (handles "Total Manhours"
+// vs "Total Man Hours" vs trailing spaces, etc.)
+function pick(row: any, keys: string[]): string {
+  for (const k of keys) {
+    if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') {
+      return String(row[k]).trim()
+    }
+  }
+  // fallback: case/space-insensitive match
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, '')
+  const wanted = keys.map(norm)
+  for (const actualKey of Object.keys(row)) {
+    if (wanted.includes(norm(actualKey))) {
+      const v = row[actualKey]
+      if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim()
+    }
+  }
+  return ''
+}
+
+const BATCH_SIZE = 500
+
 export default function UploadPage() {
   const { user } = useAuth()
   const router = useRouter()
-  const [phase, setPhase] = useState<'training'|'master'>('training')
+  const [phase, setPhase] = useState<'training' | 'master'>('training')
   const [rows, setRows] = useState<any[]>([])
   const [fileName, setFileName] = useState('')
   const [uploading, setUploading] = useState(false)
+  const [progress, setProgress] = useState('')
   const [done, setDone] = useState(false)
+  const [uploadedCount, setUploadedCount] = useState(0)
   const [error, setError] = useState('')
   const [preview, setPreview] = useState<any[]>([])
 
@@ -23,7 +47,7 @@ export default function UploadPage() {
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
-    setFileName(file.name); setError(''); setDone(false); setRows([]); setPreview([])
+    setFileName(file.name); setError(''); setDone(false); setRows([]); setPreview([]); setProgress('')
     const reader = new FileReader()
     reader.onload = ev => {
       try {
@@ -40,45 +64,79 @@ export default function UploadPage() {
     reader.readAsArrayBuffer(file)
   }
 
+  // Delete ALL rows of a table (Supabase requires a filter, so we match every row via id not null)
+  async function deleteAll(table: string) {
+    const { error: delErr } = await supabase.from(table).delete().not('id', 'is', null)
+    if (delErr) throw new Error('Could not clear old data: ' + delErr.message)
+  }
+
+  // Insert rows in batches so large files don't fail/timeout
+  async function insertInBatches(table: string, all: any[]) {
+    for (let i = 0; i < all.length; i += BATCH_SIZE) {
+      const chunk = all.slice(i, i + BATCH_SIZE)
+      const { error: insErr } = await supabase.from(table).insert(chunk)
+      if (insErr) throw new Error(`Insert failed at row ${i + 1}: ${insErr.message}`)
+      setProgress(`Uploading… ${Math.min(i + BATCH_SIZE, all.length)} / ${all.length}`)
+    }
+  }
+
   async function handleUpload() {
     if (!rows.length) return
-    setUploading(true); setError('')
-    try {
-      if (phase === 'training') {
-        const inserts = rows.map((r: any) => ({
-          emp_code: String(r['Employee Code'] || r['Emp Code'] || '').trim(),
-          emp_name: String(r['Employee Name'] || r['Name'] || '').trim(),
-          branch: user?.role === 'spoc' ? (user.branch || '') : String(r['Branch'] || '').trim(),
-          gender: String(r['Gender'] || '').trim(),
-          grade: String(r['Grade'] || '').trim(),
-          month: String(r['Month'] || '').trim(),
-          training_categories: String(r['Training Categories'] || r['Category'] || '').trim(),
-          total_man_hours: Number(parseFloat(String(r['Total Man Hours'] || '0')).toFixed(2)),
-          designation: String(r['Designation'] || '').trim(),
-          department: String(r['Department'] || '').trim(),
-          uploaded_by: String(user?.name || '').trim(),
-        })).filter((r: any) => r.emp_code)
 
-        const { error: dbErr } = await supabase.from('training_mis').insert(inserts)
-        if (dbErr) throw new Error(dbErr.message)
-      } else {
-        const inserts = rows.map((r: any) => ({
-          emp_code: String(r['Employee Code'] || r['Emp Code'] || '').trim(),
-          emp_name: String(r['Employee Name'] || r['Name'] || '').trim(),
-          branch: String(r['Branch'] || '').trim(),
-          grade: String(r['Grade'] || '').trim(),
-          gender: String(r['Gender'] || '').trim(),
-          designation: String(r['Designation'] || '').trim(),
-          department: String(r['Department'] || '').trim(),
-        })).filter((r: any) => r.emp_code)
-        const { error: dbErr } = await supabase.from('employee_master').upsert(inserts, { onConflict: 'emp_code' })
-        if (dbErr) throw new Error(dbErr.message)
-      }
+    let inserts: any[] = []
+
+    if (phase === 'training') {
+      inserts = rows.map((r: any) => ({
+        emp_code: pick(r, ['Employee Code', 'Emp Code']),
+        emp_name: pick(r, ['Employee Name', 'Name']),
+        branch: user?.role === 'spoc' ? (user.branch || '') : pick(r, ['Branch']),
+        gender: pick(r, ['Gender']),
+        grade: pick(r, ['Grade']),
+        month: pick(r, ['Month']),
+        training_categories: pick(r, ['Training Categories', 'Category']),
+        total_man_hours: Number(parseFloat(pick(r, ['Total Manhours', 'Total Man Hours', 'Total Manhrs', 'Manhours']) || '0')) || 0,
+        designation: pick(r, ['Designation']),
+        department: pick(r, ['Department']),
+        uploaded_by: String(user?.name || '').trim(),
+      })).filter((r: any) => r.emp_code && r.month)
+    } else {
+      inserts = rows.map((r: any) => ({
+        emp_code: pick(r, ['Employee Code', 'Emp Code']),
+        emp_name: pick(r, ['Employee Name', 'Name']),
+        branch: pick(r, ['Branch']),
+        grade: pick(r, ['Grade']),
+        gender: pick(r, ['Gender']),
+        designation: pick(r, ['Designation']),
+        department: pick(r, ['Department']),
+      })).filter((r: any) => r.emp_code)
+    }
+
+    // SAFETY: never wipe old data if the new file has no valid rows
+    if (!inserts.length) {
+      setError('No valid rows found in this file (Employee Code / Month missing). Nothing was changed.')
+      return
+    }
+
+    const tableLabel = phase === 'training' ? 'Training MIS' : 'Employee Master'
+    const ok = window.confirm(
+      `This will REPLACE all existing ${tableLabel} data with ${inserts.length} rows from "${fileName}".\n\n` +
+      `The current data will be deleted first, then the new file loaded. Continue?`
+    )
+    if (!ok) return
+
+    setUploading(true); setError(''); setProgress('Preparing…')
+    try {
+      const table = phase === 'training' ? 'training_mis' : 'employee_master'
+      setProgress('Clearing old data…')
+      await deleteAll(table)
+      await insertInBatches(table, inserts)
+      setUploadedCount(inserts.length)
       setDone(true)
     } catch (err: any) {
-      setError('Upload failed: ' + err.message)
+      setError('Upload failed: ' + err.message + ' — please re-upload the file to restore data.')
     }
     setUploading(false)
+    setProgress('')
   }
 
   return (
@@ -95,12 +153,12 @@ export default function UploadPage() {
           <>
             <div style={{ background: 'white', borderRadius: '12px', border: '1px solid #e2e8f0', padding: '24px' }}>
               <h1 style={{ color: '#153F90', fontWeight: '700', fontSize: '20px', margin: 0 }}>📤 Upload Training Data</h1>
-              <p style={{ color: '#64748b', fontSize: '14px', marginTop: '4px' }}>Phase 1 required · Phase 2 optional</p>
+              <p style={{ color: '#64748b', fontSize: '14px', marginTop: '4px' }}>Each upload fully replaces that table with your file (no duplicates).</p>
             </div>
 
             <div style={{ display: 'flex', gap: '12px' }}>
               {(['training', 'master'] as const).map(p => (
-                <button key={p} onClick={() => { setPhase(p); setRows([]); setFileName(''); setDone(false); setPreview([]) }}
+                <button key={p} onClick={() => { setPhase(p); setRows([]); setFileName(''); setDone(false); setPreview([]); setError(''); setProgress('') }}
                   style={{ flex: 1, padding: '12px', borderRadius: '12px', border: phase === p ? 'none' : '2px solid #e2e8f0', fontWeight: '700', cursor: 'pointer', background: phase === p ? '#153F90' : 'white', color: phase === p ? 'white' : '#475569', fontSize: '14px' }}>
                   <div>{p === 'training' ? '📊 Phase 1 — Training Data' : '📋 Phase 2 — Employee Master'}</div>
                   <div style={{ fontSize: '12px', fontWeight: '400', marginTop: '4px', opacity: 0.8 }}>{p === 'training' ? 'Required' : 'Optional'}</div>
@@ -131,7 +189,8 @@ export default function UploadPage() {
             {done && (
               <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '12px', padding: '40px', textAlign: 'center' }}>
                 <div style={{ fontSize: '40px', marginBottom: '8px' }}>✅</div>
-                <div style={{ fontWeight: '700', color: '#15803d', fontSize: '20px' }}>{rows.length} records uploaded!</div>
+                <div style={{ fontWeight: '700', color: '#15803d', fontSize: '20px' }}>{uploadedCount} records uploaded!</div>
+                <div style={{ fontSize: '13px', color: '#15803d', marginTop: '4px' }}>Old data replaced — dashboard now shows only this file.</div>
                 <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '16px' }}>
                   <button onClick={() => router.push('/dashboard')} style={{ padding: '10px 24px', background: '#153F90', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '700', cursor: 'pointer' }}>View Dashboard</button>
                   <button onClick={() => { setDone(false); setRows([]); setFileName(''); setPreview([]) }} style={{ padding: '10px 24px', background: 'white', color: '#475569', border: '1px solid #e2e8f0', borderRadius: '8px', fontWeight: '700', cursor: 'pointer' }}>Upload More</button>
@@ -142,7 +201,7 @@ export default function UploadPage() {
             {rows.length > 0 && !done && (
               <button onClick={handleUpload} disabled={uploading}
                 style={{ width: '100%', padding: '14px', background: uploading ? '#94a3b8' : '#153F90', color: 'white', border: 'none', borderRadius: '8px', fontWeight: '700', fontSize: '16px', cursor: uploading ? 'not-allowed' : 'pointer' }}>
-                {uploading ? '⏳ Uploading...' : `📤 Upload ${rows.length} Records`}
+                {uploading ? (progress || '⏳ Uploading…') : `📤 Replace with ${rows.length} Records`}
               </button>
             )}
           </>
