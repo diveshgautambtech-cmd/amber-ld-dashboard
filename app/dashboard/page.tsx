@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '@/lib/auth'
 import { supabase } from '@/lib/supabase'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
@@ -12,45 +12,106 @@ interface BranchStat {
   hours: number
 }
 
+interface EmpRow {
+  emp_code: string
+  emp_name: string
+  branch: string
+  gender: string
+  trained: boolean
+  hours: number
+  trainings: string[]
+}
+
 const COLORS = ['#153F90', '#16A34A', '#D97706', '#DC2626', '#7C3AED', '#0891B2']
+
+// Preferred financial-year month order; anything unknown gets pushed to the end alphabetically.
+const MONTH_ORDER = ['April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December', 'January', 'February', 'March']
+function sortMonths(list: string[]) {
+  return [...list].sort((a, b) => {
+    const ia = MONTH_ORDER.indexOf(a), ib = MONTH_ORDER.indexOf(b)
+    if (ia === -1 && ib === -1) return a.localeCompare(b)
+    if (ia === -1) return 1
+    if (ib === -1) return -1
+    return ia - ib
+  })
+}
+
+/**
+ * Fetch ALL rows from a table, working around Supabase's default 1000-row cap.
+ * It pages through with .range() until a short page comes back.
+ */
+async function fetchAllRows(table: string, applyFilters?: (q: any) => any) {
+  const pageSize = 1000
+  let from = 0
+  let all: any[] = []
+  while (true) {
+    let q = supabase.from(table).select('*').range(from, from + pageSize - 1)
+    if (applyFilters) q = applyFilters(q)
+    const { data, error } = await q
+    if (error) { console.error(`fetchAllRows(${table})`, error); break }
+    if (!data || data.length === 0) break
+    all = all.concat(data)
+    if (data.length < pageSize) break
+    from += pageSize
+  }
+  return all
+}
 
 export default function DashboardPage() {
   const { user } = useAuth()
   const [stats, setStats] = useState({ total: 0, trained: 0, coverage: 0, totalHours: 0, avgHours: 0 })
   const [branchData, setBranchData] = useState<BranchStat[]>([])
   const [genderData, setGenderData] = useState<any[]>([])
+  const [empRows, setEmpRows] = useState<EmpRow[]>([])
   const [loading, setLoading] = useState(true)
   const [period, setPeriod] = useState('All')
   const [months, setMonths] = useState<string[]>([])
+
+  // Employee table controls
+  const [empSearch, setEmpSearch] = useState('')
+  const [empStatusFilter, setEmpStatusFilter] = useState<'all' | 'trained' | 'pending'>('all')
 
   useEffect(() => { fetchData() }, [user, period])
 
   async function fetchData() {
     setLoading(true)
     try {
-      let query = supabase.from('training_mis').select('*')
-      if (user?.role === 'spoc' && user.branch) query = query.eq('branch', user.branch)
-      if (period !== 'All') query = query.eq('month', period)
-      const { data: training } = await query
+      // ---- Training rows (ALL of them, not just first 1000) ----
+      const training = await fetchAllRows('training_mis', (q) => {
+        let qq = q
+        if (user?.role === 'spoc' && user.branch) qq = qq.eq('branch', user.branch)
+        if (period !== 'All') qq = qq.eq('month', period)
+        return qq
+      })
 
-      let empQuery = supabase.from('employee_master').select('*')
-      if (user?.role === 'spoc' && user.branch) empQuery = empQuery.eq('branch', user.branch)
-      const { data: employees } = await empQuery
+      // ---- Employee master (ALL rows) ----
+      const employees = await fetchAllRows('employee_master', (q) => {
+        let qq = q
+        if (user?.role === 'spoc' && user.branch) qq = qq.eq('branch', user.branch)
+        return qq
+      })
 
       if (!training || !employees) { setLoading(false); return }
 
-      // Unique months for filter
-      const allMonths = [...new Set(training.map((r: any) => r.month).filter(Boolean))] as string[]
-      setMonths(allMonths)
+      // Available months for the filter — fetch across the WHOLE table (ignoring the
+      // current period filter) so all months always show as pills.
+      const monthRows = await fetchAllRows('training_mis', (q) => {
+        let qq = q
+        if (user?.role === 'spoc' && user.branch) qq = qq.eq('branch', user.branch)
+        return qq
+      })
+      const allMonths = [...new Set(monthRows.map((r: any) => r.month).filter(Boolean))] as string[]
+      setMonths(sortMonths(allMonths))
 
       // Aggregate training by employee
-      const trainingMap: Record<string, { hours: number; trained: boolean }> = {}
+      const trainingMap: Record<string, { hours: number; trained: boolean; trainings: Set<string> }> = {}
       training.forEach((r: any) => {
         const code = r.emp_code?.toLowerCase()
         if (!code) return
-        if (!trainingMap[code]) trainingMap[code] = { hours: 0, trained: false }
-        trainingMap[code].hours += r.total_man_hours || 0
-        if ((r.total_man_hours || 0) > 0) trainingMap[code].trained = true
+        if (!trainingMap[code]) trainingMap[code] = { hours: 0, trained: false, trainings: new Set() }
+        trainingMap[code].hours += Number(r.total_man_hours) || 0
+        if ((Number(r.total_man_hours) || 0) > 0) trainingMap[code].trained = true
+        if (r.training_categories) trainingMap[code].trainings.add(String(r.training_categories))
       })
 
       const total = employees.length
@@ -94,8 +155,58 @@ export default function DashboardPage() {
         coverage: v.total > 0 ? Math.round((v.trained / v.total) * 100) : 0,
       })))
 
+      // ---- Employee-wise coverage rows (trained + pending) ----
+      const rows: EmpRow[] = employees.map((e: any) => {
+        const t = trainingMap[e.emp_code?.toLowerCase()]
+        return {
+          emp_code: e.emp_code || '',
+          emp_name: e.emp_name || '',
+          branch: e.branch || 'Unknown',
+          gender: e.gender || '',
+          trained: !!t?.trained,
+          hours: Math.round(t?.hours || 0),
+          trainings: t ? Array.from(t.trainings) : [],
+        }
+      }).sort((a, b) => {
+        if (a.trained !== b.trained) return a.trained ? -1 : 1 // trained first
+        return a.branch.localeCompare(b.branch)
+      })
+      setEmpRows(rows)
+
     } catch (err) { console.error(err) }
     setLoading(false)
+  }
+
+  // Filtered employee rows for the drill-down table
+  const filteredEmpRows = useMemo(() => {
+    const term = empSearch.trim().toLowerCase()
+    return empRows.filter(r => {
+      if (empStatusFilter === 'trained' && !r.trained) return false
+      if (empStatusFilter === 'pending' && r.trained) return false
+      if (!term) return true
+      return (
+        r.emp_code.toLowerCase().includes(term) ||
+        r.emp_name.toLowerCase().includes(term) ||
+        r.branch.toLowerCase().includes(term)
+      )
+    })
+  }, [empRows, empSearch, empStatusFilter])
+
+  function exportEmpCSV() {
+    const header = ['Employee Code', 'Name', 'Branch', 'Gender', 'Status', 'Total Hours', 'Trainings']
+    const lines = filteredEmpRows.map(r => [
+      r.emp_code, r.emp_name, r.branch, r.gender,
+      r.trained ? 'Trained' : 'Pending', r.hours,
+      r.trainings.join('; '),
+    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
+    const csv = [header.join(','), ...lines].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `employee_coverage_${period}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   const kpiCards = [
@@ -216,6 +327,78 @@ export default function DashboardPage() {
               {branchData.length === 0 && (
                 <div className="text-center py-12 text-slate-400 text-sm">
                   No data yet. SPOCs need to upload their monthly training data first.
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ===== Employee-wise Coverage (NEW) ===== */}
+          <div className="card p-5">
+            <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
+              <h3 className="font-display font-bold text-sm text-[#153F90]">
+                Employee-wise Coverage
+                <span className="ml-2 text-xs font-normal text-slate-400">
+                  ({filteredEmpRows.length} shown · {empRows.filter(r => r.trained).length} trained · {empRows.filter(r => !r.trained).length} pending)
+                </span>
+              </h3>
+              <div className="flex items-center gap-2 flex-wrap">
+                <input
+                  value={empSearch}
+                  onChange={e => setEmpSearch(e.target.value)}
+                  placeholder="Search name / code / branch"
+                  className="px-3 py-1.5 rounded-lg text-xs border border-slate-200 focus:border-[#153F90] outline-none w-56"
+                />
+                {(['all', 'trained', 'pending'] as const).map(s => (
+                  <button key={s} onClick={() => setEmpStatusFilter(s)}
+                    className={`px-3 py-1.5 rounded-full text-xs font-bold border capitalize transition-all
+                      ${empStatusFilter === s ? 'bg-[#153F90] text-white border-[#153F90]' : 'bg-white text-slate-600 border-slate-200 hover:border-[#153F90]'}`}>
+                    {s}
+                  </button>
+                ))}
+                <button onClick={exportEmpCSV}
+                  className="px-3 py-1.5 rounded-full text-xs font-bold border border-green-600 text-green-700 hover:bg-green-600 hover:text-white transition-all">
+                  ⬇ Export CSV
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
+              <table className="w-full text-sm border-collapse">
+                <thead className="sticky top-0">
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 text-xs uppercase tracking-wider font-semibold">
+                    <th className="px-4 py-3 text-left">Emp Code</th>
+                    <th className="px-4 py-3 text-left">Name</th>
+                    <th className="px-4 py-3 text-left">Branch</th>
+                    <th className="px-4 py-3 text-center">Status</th>
+                    <th className="px-4 py-3 text-center">Hours</th>
+                    <th className="px-4 py-3 text-left">Trainings</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredEmpRows.slice(0, 500).map(r => (
+                    <tr key={r.emp_code} className="hover:bg-slate-50">
+                      <td className="px-4 py-2.5 font-mono text-xs">{r.emp_code}</td>
+                      <td className="px-4 py-2.5 font-semibold">{r.emp_name}</td>
+                      <td className="px-4 py-2.5 text-slate-600">{r.branch}</td>
+                      <td className="px-4 py-2.5 text-center">
+                        {r.trained ? (
+                          <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: '#16A34A20', color: '#16A34A' }}>Trained</span>
+                        ) : (
+                          <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: '#DC262620', color: '#DC2626' }}>Pending</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 text-center text-slate-600">{r.hours || '—'}</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-xs">{r.trainings.join(', ') || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {filteredEmpRows.length === 0 && (
+                <div className="text-center py-12 text-slate-400 text-sm">No employees match your filter.</div>
+              )}
+              {filteredEmpRows.length > 500 && (
+                <div className="text-center py-3 text-slate-400 text-xs">
+                  Showing first 500 of {filteredEmpRows.length}. Use search/filter or Export CSV for the full list.
                 </div>
               )}
             </div>
