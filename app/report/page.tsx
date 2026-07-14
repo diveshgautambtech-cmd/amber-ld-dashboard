@@ -4,7 +4,7 @@ import { useAuth } from '@/lib/auth'
 import { supabase } from '@/lib/supabase'
 import PageShell from '@/components/dashboard/PageShell'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LabelList } from 'recharts'
-
+import { downloadExcelReport } from '@/lib/exportExcel'
 const BRAND = '#153F90'
 const MONTH_ORDER = ['April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December', 'January', 'February', 'March']
 function sortMonths(list: string[]) {
@@ -184,6 +184,10 @@ export default function ReportPage() {
               </button>
             ))}
           </div>
+          <button onClick={() => downloadExcelReport(user, period)}
+            style={{ padding: '10px 22px', background: 'white', color: '#15803d', border: '1px solid #15803d', borderRadius: '8px', fontWeight: 700, cursor: 'pointer', fontSize: '14px', marginRight: '8px' }}>
+            ⬇ Download Excel
+          </button>
           <button onClick={() => window.print()}
             style={{ padding: '10px 22px', background: BRAND, color: 'white', border: 'none', borderRadius: '8px', fontWeight: 700, cursor: 'pointer', fontSize: '14px' }}>
             ⬇ Download PDF
