@@ -2,8 +2,9 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '@/lib/auth'
 import { supabase } from '@/lib/supabase'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
 import { downloadExcelReport } from '@/lib/exportExcel'
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts'
+
 interface BranchStat {
   branch: string
   total: number
@@ -16,6 +17,7 @@ interface EmpRow {
   emp_code: string
   emp_name: string
   branch: string
+  grade: string
   gender: string
   trained: boolean
   hours: number
@@ -24,7 +26,6 @@ interface EmpRow {
 
 const COLORS = ['#153F90', '#16A34A', '#D97706', '#DC2626', '#7C3AED', '#0891B2']
 
-// Preferred financial-year month order; anything unknown gets pushed to the end alphabetically.
 const MONTH_ORDER = ['April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December', 'January', 'February', 'March']
 function sortMonths(list: string[]) {
   return [...list].sort((a, b) => {
@@ -36,10 +37,6 @@ function sortMonths(list: string[]) {
   })
 }
 
-/**
- * Fetch ALL rows from a table, working around Supabase's default 1000-row cap.
- * It pages through with .range() until a short page comes back.
- */
 async function fetchAllRows(table: string, applyFilters?: (q: any) => any) {
   const pageSize = 1000
   let from = 0
@@ -65,27 +62,32 @@ export default function DashboardPage() {
   const [empRows, setEmpRows] = useState<EmpRow[]>([])
   const [loading, setLoading] = useState(true)
   const [period, setPeriod] = useState('All')
+  const [grade, setGrade] = useState('All')
   const [months, setMonths] = useState<string[]>([])
+  const [grades, setGrades] = useState<string[]>([])
 
-  // Employee table controls
   const [empSearch, setEmpSearch] = useState('')
   const [empStatusFilter, setEmpStatusFilter] = useState<'all' | 'trained' | 'pending'>('all')
 
-  useEffect(() => { fetchData() }, [user, period])
+  useEffect(() => { fetchData() }, [user, period, grade])
 
   async function fetchData() {
     setLoading(true)
     try {
-      // ---- Training rows (ALL of them, not just first 1000) ----
-      const training = await fetchAllRows('training_mis', (q) => {
+      let training = await fetchAllRows('training_mis', (q) => {
         let qq = q
         if (user?.role === 'spoc' && user.branch) qq = qq.eq('branch', user.branch)
         if (period !== 'All') qq = qq.eq('month', period)
         return qq
       })
 
-      // ---- Employee master (ALL rows) ----
-      const employees = await fetchAllRows('employee_master', (q) => {
+      let employees = await fetchAllRows('employee_master', (q) => {
+        let qq = q
+        if (user?.role === 'spoc' && user.branch) qq = qq.eq('branch', user.branch)
+        return qq
+      })
+
+      const monthRows = await fetchAllRows('training_mis', (q) => {
         let qq = q
         if (user?.role === 'spoc' && user.branch) qq = qq.eq('branch', user.branch)
         return qq
@@ -93,15 +95,17 @@ export default function DashboardPage() {
 
       if (!training || !employees) { setLoading(false); return }
 
-      // Available months for the filter — fetch across the WHOLE table (ignoring the
-      // current period filter) so all months always show as pills.
-      const monthRows = await fetchAllRows('training_mis', (q) => {
-        let qq = q
-        if (user?.role === 'spoc' && user.branch) qq = qq.eq('branch', user.branch)
-        return qq
-      })
-      const allMonths = [...new Set(monthRows.map((r: any) => r.month).filter(Boolean))] as string[]
-      setMonths(sortMonths(allMonths))
+      // Filter options (from full employee master, unaffected by current grade selection)
+      setMonths(sortMonths([...new Set(monthRows.map((r: any) => r.month).filter(Boolean))] as string[]))
+      setGrades([...new Set(employees.map((e: any) => e.grade).filter(Boolean))].sort() as string[])
+
+      // ---- Grade scoping (robust: by emp_code membership from employee_master) ----
+      if (grade !== 'All') {
+        const validCodes = new Set<string>()
+        employees.forEach((e: any) => { if ((e.grade || '') === grade && e.emp_code) validCodes.add(String(e.emp_code).toLowerCase()) })
+        employees = employees.filter((e: any) => (e.grade || '') === grade)
+        training = training.filter((r: any) => r.emp_code && validCodes.has(String(r.emp_code).toLowerCase()))
+      }
 
       // Aggregate training by employee
       const trainingMap: Record<string, { hours: number; trained: boolean; trainings: Set<string> }> = {}
@@ -135,12 +139,11 @@ export default function DashboardPage() {
         if (t?.trained) byBranch[b].trained++
         byBranch[b].hours += t?.hours || 0
       })
-      const branchArr = Object.values(byBranch).map(b => ({
+      setBranchData(Object.values(byBranch).map(b => ({
         ...b,
         coverage: b.total > 0 ? Math.round((b.trained / b.total) * 100) : 0,
         hours: Math.round(b.hours),
-      })).sort((a, b) => b.coverage - a.coverage)
-      setBranchData(branchArr)
+      })).sort((a, b) => b.coverage - a.coverage))
 
       // Gender breakdown
       const byGender: Record<string, { total: number; trained: number }> = {}
@@ -155,20 +158,21 @@ export default function DashboardPage() {
         coverage: v.total > 0 ? Math.round((v.trained / v.total) * 100) : 0,
       })))
 
-      // ---- Employee-wise coverage rows (trained + pending) ----
+      // Employee-wise rows
       const rows: EmpRow[] = employees.map((e: any) => {
         const t = trainingMap[e.emp_code?.toLowerCase()]
         return {
           emp_code: e.emp_code || '',
           emp_name: e.emp_name || '',
           branch: e.branch || 'Unknown',
+          grade: e.grade || '',
           gender: e.gender || '',
           trained: !!t?.trained,
           hours: Math.round(t?.hours || 0),
           trainings: t ? Array.from(t.trainings) : [],
         }
       }).sort((a, b) => {
-        if (a.trained !== b.trained) return a.trained ? -1 : 1 // trained first
+        if (a.trained !== b.trained) return a.trained ? -1 : 1
         return a.branch.localeCompare(b.branch)
       })
       setEmpRows(rows)
@@ -177,7 +181,6 @@ export default function DashboardPage() {
     setLoading(false)
   }
 
-  // Filtered employee rows for the drill-down table
   const filteredEmpRows = useMemo(() => {
     const term = empSearch.trim().toLowerCase()
     return empRows.filter(r => {
@@ -193,9 +196,9 @@ export default function DashboardPage() {
   }, [empRows, empSearch, empStatusFilter])
 
   function exportEmpCSV() {
-    const header = ['Employee Code', 'Name', 'Branch', 'Gender', 'Status', 'Total Hours', 'Trainings']
+    const header = ['Employee Code', 'Name', 'Branch', 'Grade', 'Gender', 'Status', 'Total Hours', 'Trainings']
     const lines = filteredEmpRows.map(r => [
-      r.emp_code, r.emp_name, r.branch, r.gender,
+      r.emp_code, r.emp_name, r.branch, r.grade, r.gender,
       r.trained ? 'Trained' : 'Pending', r.hours,
       r.trainings.join('; '),
     ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
@@ -204,7 +207,7 @@ export default function DashboardPage() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `employee_coverage_${period}.csv`
+    a.download = `employee_coverage_${period}_${grade}.csv`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -219,7 +222,6 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      {/* SPOC Banner */}
       {user?.role === 'spoc' && (
         <div className="spoc-banner">
           <span>🔒</span>
@@ -227,21 +229,30 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Month filter */}
-        <div className="flex items-center gap-3 flex-wrap">
-          <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Filter by Month:</span>
-          {['All', ...months].map(m => (
-            <button key={m} onClick={() => setPeriod(m)}
-              className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all border
-                ${period === m ? 'bg-[#153F90] text-white border-[#153F90]' : 'bg-white text-slate-600 border-slate-200 hover:border-[#153F90]'}`}>
-              {m}
-            </button>
-          ))}
-          <button onClick={() => downloadExcelReport(user, period)}
-            className="ml-auto px-3 py-1.5 rounded-full text-xs font-bold border border-green-600 text-green-700 hover:bg-green-600 hover:text-white transition-all">
-            ⬇ Export Excel
+      {/* Filters */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Filter by Month:</span>
+        {['All', ...months].map(m => (
+          <button key={m} onClick={() => setPeriod(m)}
+            className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all border
+              ${period === m ? 'bg-[#153F90] text-white border-[#153F90]' : 'bg-white text-slate-600 border-slate-200 hover:border-[#153F90]'}`}>
+            {m}
           </button>
-        </div>
+        ))}
+
+        <span className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-2">Grade:</span>
+        <select value={grade} onChange={e => setGrade(e.target.value)}
+          className="px-3 py-1.5 rounded-full text-xs font-bold border border-slate-200 text-slate-600 bg-white focus:border-[#153F90] outline-none">
+          <option value="All">All Grades</option>
+          {grades.map(g => <option key={g} value={g}>{g}</option>)}
+        </select>
+
+        <button onClick={() => downloadExcelReport(user, period, grade)}
+          className="ml-auto px-3 py-1.5 rounded-full text-xs font-bold border border-green-600 text-green-700 hover:bg-green-600 hover:text-white transition-all">
+          ⬇ Export Excel
+        </button>
+      </div>
+
       {loading ? (
         <div className="card p-12 text-center text-slate-500">Loading dashboard data...</div>
       ) : (
@@ -259,7 +270,6 @@ export default function DashboardPage() {
 
           {/* Charts row */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Branch coverage chart */}
             <div className="card p-5">
               <h3 className="font-display font-bold text-sm text-[#153F90] mb-4">Branch Coverage %</h3>
               <ResponsiveContainer width="100%" height={280}>
@@ -272,7 +282,6 @@ export default function DashboardPage() {
               </ResponsiveContainer>
             </div>
 
-            {/* Gender pie chart */}
             <div className="card p-5">
               <h3 className="font-display font-bold text-sm text-[#153F90] mb-4">Gender-wise Trained Employees</h3>
               <ResponsiveContainer width="100%" height={280}>
@@ -329,13 +338,13 @@ export default function DashboardPage() {
               </table>
               {branchData.length === 0 && (
                 <div className="text-center py-12 text-slate-400 text-sm">
-                  No data yet. SPOCs need to upload their monthly training data first.
+                  No data for this filter.
                 </div>
               )}
             </div>
           </div>
 
-          {/* ===== Employee-wise Coverage (NEW) ===== */}
+          {/* Employee-wise Coverage */}
           <div className="card p-5">
             <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
               <h3 className="font-display font-bold text-sm text-[#153F90]">
@@ -372,6 +381,7 @@ export default function DashboardPage() {
                     <th className="px-4 py-3 text-left">Emp Code</th>
                     <th className="px-4 py-3 text-left">Name</th>
                     <th className="px-4 py-3 text-left">Branch</th>
+                    <th className="px-4 py-3 text-left">Grade</th>
                     <th className="px-4 py-3 text-center">Status</th>
                     <th className="px-4 py-3 text-center">Hours</th>
                     <th className="px-4 py-3 text-left">Trainings</th>
@@ -383,6 +393,7 @@ export default function DashboardPage() {
                       <td className="px-4 py-2.5 font-mono text-xs">{r.emp_code}</td>
                       <td className="px-4 py-2.5 font-semibold">{r.emp_name}</td>
                       <td className="px-4 py-2.5 text-slate-600">{r.branch}</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-xs">{r.grade || '—'}</td>
                       <td className="px-4 py-2.5 text-center">
                         {r.trained ? (
                           <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: '#16A34A20', color: '#16A34A' }}>Trained</span>
