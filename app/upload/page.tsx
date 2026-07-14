@@ -66,10 +66,11 @@ export default function UploadPage() {
 
   // Delete ALL rows of a table (Supabase requires a filter, so we match every row via id not null)
   async function deleteAll(table: string) {
-    const { error: delErr } = await supabase.from(table).delete().not('id', 'is', null)
-    if (delErr) throw new Error('Could not clear old data: ' + delErr.message)
-  }
-
+  // employee_master has no `id` column; its key is emp_code
+  const keyCol = table === 'employee_master' ? 'emp_code' : 'id'
+  const { error: delErr } = await supabase.from(table).delete().not(keyCol, 'is', null)
+  if (delErr) throw new Error('Could not clear old data: ' + delErr.message)
+}
   // Insert rows in batches so large files don't fail/timeout
   async function insertInBatches(table: string, all: any[]) {
     for (let i = 0; i < all.length; i += BATCH_SIZE) {
