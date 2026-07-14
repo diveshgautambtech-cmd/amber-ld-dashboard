@@ -38,16 +38,27 @@ function statusLabel(coverage: number): string {
   return 'Critical Gap'
 }
 
-export async function downloadExcelReport(user: any, period: string = 'All'): Promise<void> {
+export async function downloadExcelReport(user: any, period: string = 'All', grade: string = 'All'): Promise<void> {
   const spocFilter = (q: any) => (user && user.role === 'spoc' && user.branch ? q.eq('branch', user.branch) : q)
 
-  const training: any[] = await fetchAllRows('training_mis', (q: any) => {
+  let training: any[] = await fetchAllRows('training_mis', (q: any) => {
     let qq = spocFilter(q)
     if (period !== 'All') qq = qq.eq('month', period)
     return qq
   })
-  const employees: any[] = await fetchAllRows('employee_master', spocFilter)
-  const allTraining: any[] = await fetchAllRows('training_mis', spocFilter)
+  let employees: any[] = await fetchAllRows('employee_master', spocFilter)
+  let allTraining: any[] = await fetchAllRows('training_mis', spocFilter)
+
+  // ---- Grade scoping (robust: by emp_code membership from employee_master) ----
+  if (grade !== 'All') {
+    const validCodes = new Set<string>()
+    employees.forEach((e: any) => {
+      if ((e.grade || '') === grade && e.emp_code) validCodes.add(String(e.emp_code).toLowerCase())
+    })
+    employees = employees.filter((e: any) => (e.grade || '') === grade)
+    training = training.filter((r: any) => r.emp_code && validCodes.has(String(r.emp_code).toLowerCase()))
+    allTraining = allTraining.filter((r: any) => r.emp_code && validCodes.has(String(r.emp_code).toLowerCase()))
+  }
 
   const tMap: Record<string, { hours: number; trained: boolean; trainings: string[] }> = {}
   training.forEach((r: any) => {
@@ -87,6 +98,7 @@ export async function downloadExcelReport(user: any, period: string = 'All'): Pr
   const summaryAoa: any[][] = [
     ['Amber Group India - L&D Training Report'],
     ['Scope', period === 'All' ? 'All Months (Cumulative)' : period],
+    ['Grade', grade === 'All' ? 'All Grades' : grade],
     ['Branches', user && user.role === 'spoc' && user.branch ? user.branch : 'All Branches'],
     ['Generated', new Date().toLocaleString('en-IN')],
     ['Prepared by', (user && user.name) || 'HR'],
@@ -142,6 +154,7 @@ export async function downloadExcelReport(user: any, period: string = 'All'): Pr
       'Emp Code': e.emp_code || '',
       'Name': e.emp_name || '',
       'Branch': e.branch || '',
+      'Grade': e.grade || '',
       'Gender': e.gender || '',
       'Status': t && t.trained ? 'Trained' : 'Pending',
       'Total Hours': Math.round(t ? t.hours : 0),
@@ -149,7 +162,7 @@ export async function downloadExcelReport(user: any, period: string = 'All'): Pr
     }
   }).sort((a, b) => (a.Status === b.Status ? String(a.Branch).localeCompare(String(b.Branch)) : a.Status === 'Trained' ? -1 : 1))
   const wsEmp = XLSX.utils.json_to_sheet(empJson)
-  wsEmp['!cols'] = [{ wch: 12 }, { wch: 26 }, { wch: 20 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 40 }]
+  wsEmp['!cols'] = [{ wch: 12 }, { wch: 26 }, { wch: 20 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 40 }]
   XLSX.utils.book_append_sheet(wb, wsEmp, 'Employee-wise')
 
   // Sheet 4: Category-wise
@@ -170,5 +183,6 @@ export async function downloadExcelReport(user: any, period: string = 'All'): Pr
   XLSX.utils.book_append_sheet(wb, wsCat, 'Category-wise')
 
   const stamp = new Date().toISOString().slice(0, 10)
-  XLSX.writeFile(wb, 'Amber_LD_Report_' + period + '_' + stamp + '.xlsx')
+  const gradeTag = grade === 'All' ? '' : '_' + grade.replace(/\s+/g, '')
+  XLSX.writeFile(wb, 'Amber_LD_Report_' + period + gradeTag + '_' + stamp + '.xlsx')
 }
