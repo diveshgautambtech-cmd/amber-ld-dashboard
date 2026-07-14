@@ -2,30 +2,26 @@
 import { useAuth } from '@/lib/auth'
 import { useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
-
 const navLinks = [
   { href: '/dashboard', label: '📊 Coverage' },
   { href: '/dashboard/manhours', label: '⏱ Manhours' },
   { href: '/dashboard/trends', label: '📈 Trends' },
+  { href: '/dashboard/md-review', label: '📋 MD Review' },
   { href: '/esg', label: '🌱 ESG Report' },
   { href: '/library', label: '📚 Content Library' },
   { href: '/tni', label: '🎯 Training Needs' },
+  { href: '/report', label: '📄 Report' },
 ]
-
 const adminLinks = [
   { href: '/upload', label: '📤 Upload Data' },
   { href: '/admin', label: '🔍 Admin Panel' },
 ]
-
 export default function Navbar() {
   const { user, logout } = useAuth()
   const router = useRouter()
   const pathname = usePathname()
-
   const handleLogout = () => { logout(); router.replace('/login') }
-
   if (!user) return null
-
   return (
     <header className="bg-white border-b border-slate-200 sticky top-0 z-40 shadow-sm">
       <div className="max-w-screen-2xl mx-auto px-4 py-3">
@@ -39,7 +35,6 @@ export default function Navbar() {
               {user.branch ? `${user.branch}` : 'All Branches'}
             </div>
           </div>
-
           {/* Nav links */}
           <nav className="flex items-center gap-1 flex-wrap ml-4">
             {navLinks.map(link => (
@@ -61,7 +56,6 @@ export default function Navbar() {
               </Link>
             ))}
           </nav>
-
           {/* Right side */}
           <div className="ml-auto flex items-center gap-2 flex-shrink-0">
             <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${user.role === 'admin' ? 'badge-admin' : 'badge-spoc'}`}>
