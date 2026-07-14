@@ -41,7 +41,7 @@ export default function ManhoursPage() {
   const [months, setMonths] = useState<string[]>([])
   const [grades, setGrades] = useState<string[]>([])
 
-  const [stats, setStats] = useState({ total: 0, trained: 0, coverage: 0, totalHours: 0, avgHours: 0 })
+  const [stats, setStats] = useState({ totalEmployees: 0, totalHours: 0, avgHours: 0, sessions: 0 })
   const [branchHours, setBranchHours] = useState<any[]>([])
   const [monthlyData, setMonthlyData] = useState<any[]>([])
   const [gradeData, setGradeData] = useState<any[]>([])
@@ -83,23 +83,14 @@ export default function ManhoursPage() {
         scopedMonthRows = monthRows.filter((r: any) => r.emp_code && validCodes.has(String(r.emp_code).toLowerCase()))
       }
 
-      // ---- KPIs (same as Coverage) ----
-      const tMap: Record<string, { hours: number; trained: boolean }> = {}
-      training.forEach((r: any) => {
-        const c = r.emp_code?.toLowerCase(); if (!c) return
-        if (!tMap[c]) tMap[c] = { hours: 0, trained: false }
-        tMap[c].hours += Number(r.total_man_hours) || 0
-        if ((Number(r.total_man_hours) || 0) > 0) tMap[c].trained = true
-      })
-      const total = employees.length
-      const trained = employees.filter((e: any) => tMap[e.emp_code?.toLowerCase()]?.trained).length
-      const totalHours = Math.round(Object.values(tMap).reduce((a, b) => a + b.hours, 0))
-      setStats({
-        total, trained,
-        coverage: total ? Math.round((trained / total) * 100) : 0,
-        totalHours,
-        avgHours: total ? Math.round(totalHours / total) : 0,
-      })
+      // ---- Manhours-focused KPIs ----
+      const totalEmployees = employees.length
+      const totalHours = Math.round(training.reduce((a: number, r: any) => a + (Number(r.total_man_hours) || 0), 0))
+      const trainedCodes = new Set<string>()
+      training.forEach((r: any) => { if ((Number(r.total_man_hours) || 0) > 0 && r.emp_code) trainedCodes.add(String(r.emp_code).toLowerCase()) })
+      const avgHours = trainedCodes.size ? Math.round(totalHours / trainedCodes.size) : 0
+      const sessions = training.filter((r: any) => (Number(r.total_man_hours) || 0) > 0).length
+      setStats({ totalEmployees, totalHours, avgHours, sessions })
 
       // ---- Manhours breakdowns (respect month + grade) ----
       const byBranch: Record<string, number> = {}
@@ -112,7 +103,7 @@ export default function ManhoursPage() {
       setBranchHours(Object.entries(byBranch).map(([branch, hours]) => ({ branch, hours: Math.round(hours as number) })).sort((a, b) => b.hours - a.hours))
       setGradeData(Object.entries(byGrade).map(([g, hours]) => ({ grade: g, hours: Math.round(hours as number) })).sort((a, b) => b.hours - a.hours))
 
-      // Monthly trend always across all months (respect grade, ignore month filter)
+      // Monthly trend across all months (respect grade, ignore month filter)
       const byMonth: Record<string, number> = {}
       scopedMonthRows.forEach((r: any) => {
         if (!r.month) return
@@ -124,12 +115,13 @@ export default function ManhoursPage() {
     setLoading(false)
   }
 
+  const avgAllEmp = stats.totalEmployees ? (stats.totalHours / stats.totalEmployees) : 0
   const kpiCards = [
-    { label: 'Total Employees', value: stats.total.toLocaleString(), color: '#153F90', icon: '👥' },
-    { label: 'Trained', value: stats.trained.toLocaleString(), color: '#16A34A', icon: '✅' },
-    { label: 'Coverage %', value: `${stats.coverage}%`, color: stats.coverage >= 80 ? '#16A34A' : stats.coverage >= 60 ? '#D97706' : '#DC2626', icon: '📊' },
+    { label: 'Total Employees', value: stats.totalEmployees.toLocaleString(), color: '#153F90', icon: '👥' },
     { label: 'Total Manhours', value: stats.totalHours.toLocaleString(), color: '#D97706', icon: '⏱' },
     { label: 'Avg Hrs/Employee', value: `${stats.avgHours}h`, color: '#7C3AED', icon: '📈' },
+    { label: 'Total Sessions', value: stats.sessions.toLocaleString(), color: '#0891B2', icon: '📚' },
+    { label: 'GRI 404-1 Target', value: '≥ 8 hrs', color: avgAllEmp >= 8 ? '#16A34A' : '#DC2626', icon: '🎯' },
   ]
 
   return (
@@ -162,7 +154,7 @@ export default function ManhoursPage() {
         </button>
       </div>
 
-      {/* KPI Cards (same as Coverage) */}
+      {/* KPI Cards (manhours-focused) */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         {kpiCards.map(k => (
           <div key={k.label} className="card p-5" style={{ borderLeft: `4px solid ${k.color}` }}>
