@@ -228,20 +228,20 @@ export default function DashboardPage() {
       )}
 
       {/* Month filter */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Filter by Month:</span>
-        {['All', ...months].map(m <button onClick={() => downloadExcelReport(user, period)}
-          className="ml-auto px-3 py-1.5 rounded-full text-xs font-bold border border-green-600 text-green-700 hover:bg-green-600 hover:text-white transition-all">
-          ⬇ Export Excel
-        </button>=> (
-          <button key={m} onClick={() => setPeriod(m)}
-            className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all border
-              ${period === m ? 'bg-[#153F90] text-white border-[#153F90]' : 'bg-white text-slate-600 border-slate-200 hover:border-[#153F90]'}`}>
-            {m}
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Filter by Month:</span>
+          {['All', ...months].map(m => (
+            <button key={m} onClick={() => setPeriod(m)}
+              className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all border
+                ${period === m ? 'bg-[#153F90] text-white border-[#153F90]' : 'bg-white text-slate-600 border-slate-200 hover:border-[#153F90]'}`}>
+              {m}
+            </button>
+          ))}
+          <button onClick={() => downloadExcelReport(user, period)}
+            className="ml-auto px-3 py-1.5 rounded-full text-xs font-bold border border-green-600 text-green-700 hover:bg-green-600 hover:text-white transition-all">
+            ⬇ Export Excel
           </button>
-        ))}
-      </div>
-
+        </div>
       {loading ? (
         <div className="card p-12 text-center text-slate-500">Loading dashboard data...</div>
       ) : (
