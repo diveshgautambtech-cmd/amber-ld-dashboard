@@ -5,7 +5,6 @@ import { supabase } from '@/lib/supabase'
 import { downloadExcelReport } from '@/lib/exportExcel'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid } from 'recharts'
 
-const BRAND = '#153F90'
 const MONTH_ORDER = ['April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December', 'January', 'February', 'March']
 function sortMonths(list: string[]) {
   return [...list].sort((a, b) => {
@@ -43,7 +42,6 @@ export default function ManhoursPage() {
   const [months, setMonths] = useState<string[]>([])
   const [grades, setGrades] = useState<string[]>([])
 
-  // scoped raw data (after month + grade filters)
   const [training, setTraining] = useState<any[]>([])
   const [employees, setEmployees] = useState<any[]>([])
   const [scopedMonthRows, setScopedMonthRows] = useState<any[]>([])
@@ -87,19 +85,40 @@ export default function ManhoursPage() {
     setLoading(false)
   }
 
-  // ---- headline totals ----
+  // headline totals
   const totals = useMemo(() => {
     const totalEmployees = employees.length
     const totalHours = Math.round(training.reduce((a: number, r: any) => a + (Number(r.total_man_hours) || 0), 0))
     const sessions = training.filter((r: any) => (Number(r.total_man_hours) || 0) > 0).length
-    const avg = totalEmployees ? +(totalHours / totalEmployees).toFixed(1) : 0   // Total Hours / Total Employees
+    const avg = totalEmployees ? +(totalHours / totalEmployees).toFixed(1) : 0
     return { totalEmployees, totalHours, sessions, avg }
   }, [training, employees])
 
-  // ---- summary table (View by Branch / Grade / Month) ----
-  const summary = useMemo(() => {
-    const rows: { key: string; emp: number; hours: number; sessions: number; avg: number }[] = []
+  // per-branch aggregation (for highlights + branch view)
+  const branchAgg = useMemo(() => {
+    const empCount: Record<string, number> = {}
+    employees.forEach((e: any) => { const k = String(e.branch || 'Unknown').trim(); empCount[k] = (empCount[k] || 0) + 1 })
+    const agg: Record<string, { hours: number; sessions: number }> = {}
+    training.forEach((r: any) => {
+      const k = String(r.branch || 'Unknown').trim()
+      if (!agg[k]) agg[k] = { hours: 0, sessions: 0 }
+      const h = Number(r.total_man_hours) || 0
+      agg[k].hours += h
+      if (h > 0) agg[k].sessions++
+    })
+    const keys = [...new Set([...Object.keys(empCount), ...Object.keys(agg)])]
+    return keys.map(k => {
+      const e = empCount[k] || 0, h = agg[k]?.hours || 0
+      return { key: k, emp: e, hours: Math.round(h), sessions: agg[k]?.sessions || 0, avg: e ? +(h / e).toFixed(1) : 0 }
+    }).filter(r => r.emp > 0)
+  }, [training, employees])
 
+  const topBranch = useMemo(() => branchAgg.length ? branchAgg.reduce((a, b) => b.hours > a.hours ? b : a) : null, [branchAgg])
+  const lowBranch = useMemo(() => branchAgg.length ? branchAgg.reduce((a, b) => b.hours < a.hours ? b : a) : null, [branchAgg])
+
+  // summary table by dimension
+  const summary = useMemo(() => {
+    if (viewBy === 'Branch') return [...branchAgg].sort((a, b) => b.hours - a.hours)
     if (viewBy === 'Month') {
       const totalEmp = employees.length
       const byM: Record<string, { hours: number; sessions: number }> = {}
@@ -107,50 +126,34 @@ export default function ManhoursPage() {
         const m = r.month; if (!m) return
         if (!byM[m]) byM[m] = { hours: 0, sessions: 0 }
         const h = Number(r.total_man_hours) || 0
-        byM[m].hours += h
-        if (h > 0) byM[m].sessions++
+        byM[m].hours += h; if (h > 0) byM[m].sessions++
       })
-      sortMonths(Object.keys(byM)).forEach(m => {
-        const v = byM[m]
-        rows.push({ key: m, emp: totalEmp, hours: Math.round(v.hours), sessions: v.sessions, avg: totalEmp ? +(v.hours / totalEmp).toFixed(1) : 0 })
-      })
-    } else {
-      const field = viewBy === 'Branch' ? 'branch' : 'grade'
-      const empCount: Record<string, number> = {}
-      employees.forEach((e: any) => { const k = String(e[field] || 'Unknown').trim(); empCount[k] = (empCount[k] || 0) + 1 })
-      const agg: Record<string, { hours: number; sessions: number }> = {}
-      training.forEach((r: any) => {
-        const k = String(r[field] || 'Unknown').trim()
-        if (!agg[k]) agg[k] = { hours: 0, sessions: 0 }
-        const h = Number(r.total_man_hours) || 0
-        agg[k].hours += h
-        if (h > 0) agg[k].sessions++
-      })
-      const keys = [...new Set([...Object.keys(empCount), ...Object.keys(agg)])]
-      keys.forEach(k => {
-        const e = empCount[k] || 0
-        const h = agg[k]?.hours || 0
-        rows.push({ key: k, emp: e, hours: Math.round(h), sessions: agg[k]?.sessions || 0, avg: e ? +(h / e).toFixed(1) : 0 })
-      })
-      rows.sort((a, b) => b.hours - a.hours)
+      return sortMonths(Object.keys(byM)).map(m => ({ key: m, emp: totalEmp, hours: Math.round(byM[m].hours), sessions: byM[m].sessions, avg: totalEmp ? +(byM[m].hours / totalEmp).toFixed(1) : 0 }))
     }
-    return rows
-  }, [training, employees, viewBy])
+    // Grade
+    const empCount: Record<string, number> = {}
+    employees.forEach((e: any) => { const k = String(e.grade || 'Unknown').trim(); empCount[k] = (empCount[k] || 0) + 1 })
+    const agg: Record<string, { hours: number; sessions: number }> = {}
+    training.forEach((r: any) => {
+      const k = String(r.grade || 'Unknown').trim()
+      if (!agg[k]) agg[k] = { hours: 0, sessions: 0 }
+      const h = Number(r.total_man_hours) || 0
+      agg[k].hours += h; if (h > 0) agg[k].sessions++
+    })
+    const keys = [...new Set([...Object.keys(empCount), ...Object.keys(agg)])]
+    return keys.map(k => {
+      const e = empCount[k] || 0, h = agg[k]?.hours || 0
+      return { key: k, emp: e, hours: Math.round(h), sessions: agg[k]?.sessions || 0, avg: e ? +(h / e).toFixed(1) : 0 }
+    }).sort((a, b) => b.hours - a.hours)
+  }, [viewBy, branchAgg, training, employees])
 
-  // ---- charts ----
-  const branchHours = useMemo(() => {
-    const by: Record<string, number> = {}
-    training.forEach((r: any) => { if (r.branch) by[r.branch] = (by[r.branch] || 0) + (Number(r.total_man_hours) || 0) })
-    return Object.entries(by).map(([branch, h]) => ({ branch, hours: Math.round(h as number) })).sort((a, b) => b.hours - a.hours)
-  }, [training])
-
+  // charts
+  const branchHours = useMemo(() => [...branchAgg].sort((a, b) => b.hours - a.hours).map(b => ({ branch: b.key, hours: b.hours })), [branchAgg])
   const gradeData = useMemo(() => {
     const by: Record<string, number> = {}
     training.forEach((r: any) => { if (r.grade) by[r.grade] = (by[r.grade] || 0) + (Number(r.total_man_hours) || 0) })
     return Object.entries(by).map(([g, h]) => ({ grade: g, hours: Math.round(h as number) })).sort((a, b) => b.hours - a.hours)
   }, [training])
-
-  // Monthly trend = AVG hrs per employee per month (Total Hours / Total Employees)
   const monthlyData = useMemo(() => {
     const totalEmp = employees.length
     const byMonth: Record<string, number> = {}
@@ -158,7 +161,13 @@ export default function ManhoursPage() {
     return sortMonths(Object.keys(byMonth)).map(m => ({ month: m, avg: totalEmp ? +(byMonth[m] / totalEmp).toFixed(2) : 0 }))
   }, [scopedMonthRows, employees])
 
-  const griMet = totals.avg >= 8
+  const kpiCards = [
+    { label: 'Total Employees', value: totals.totalEmployees.toLocaleString(), color: '#153F90', icon: '👥' },
+    { label: 'Total Manhours', value: totals.totalHours.toLocaleString(), color: '#D97706', icon: '⏱' },
+    { label: 'Avg Hrs/Employee', value: `${totals.avg}h`, color: '#7C3AED', icon: '📈' },
+    { label: 'Total Sessions', value: totals.sessions.toLocaleString(), color: '#0891B2', icon: '📚' },
+    { label: 'GRI 404-1 Target', value: '≥ 8 hrs', color: totals.avg >= 8 ? '#16A34A' : '#DC2626', icon: '🎯' },
+  ]
   const viewLabel = viewBy === 'Branch' ? 'Branch / Unit' : viewBy === 'Grade' ? 'Grade' : 'Month'
 
   return (
@@ -191,23 +200,57 @@ export default function ManhoursPage() {
 
       {loading ? <div className="card p-12 text-center text-slate-500">Loading...</div> : (
         <>
-          {/* Summary table (replaces KPI cards) */}
-          <div className="card p-5">
-            <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
-              <div className="flex items-center gap-3 flex-wrap">
-                <h3 className="font-display font-bold text-sm text-[#153F90]">Manhours Summary</h3>
-                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">View by:</span>
-                <select value={viewBy} onChange={e => setViewBy(e.target.value as any)}
-                  className="px-3 py-1.5 rounded-full text-xs font-bold border border-slate-200 text-slate-700 bg-white focus:border-[#153F90] outline-none">
-                  <option value="Branch">Branch</option>
-                  <option value="Grade">Grade</option>
-                  <option value="Month">Month</option>
-                </select>
+          {/* KPI Cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+            {kpiCards.map(k => (
+              <div key={k.label} className="card p-5" style={{ borderLeft: `4px solid ${k.color}` }}>
+                <div className="text-2xl mb-1">{k.icon}</div>
+                <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">{k.label}</div>
+                <div className="font-display font-bold text-2xl mt-1" style={{ color: k.color }}>{k.value}</div>
               </div>
-              <span className="text-xs font-bold px-3 py-1 rounded-full"
-                style={{ background: griMet ? '#16A34A20' : '#DC262620', color: griMet ? '#16A34A' : '#DC2626' }}>
-                🎯 GRI 404-1 Target: ≥ 8 hrs/employee · Current {totals.avg}h {griMet ? '✓' : ''}
-              </span>
+            ))}
+          </div>
+
+          {/* Top / Lowest branch highlight */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="card p-5" style={{ borderLeft: '4px solid #16A34A', background: '#F0FDF4' }}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-bold uppercase tracking-wider" style={{ color: '#16A34A' }}>🏆 Top Manhours Branch</div>
+                  <div className="font-display font-bold text-xl mt-1 text-slate-800">{topBranch ? topBranch.key : '—'}</div>
+                </div>
+                <div className="text-right">
+                  <div className="font-display font-bold text-2xl" style={{ color: '#16A34A' }}>{topBranch ? topBranch.hours.toLocaleString() : 0}</div>
+                  <div className="text-xs text-slate-500">manhours · {topBranch ? topBranch.avg : 0}h/emp</div>
+                </div>
+              </div>
+            </div>
+            <div className="card p-5" style={{ borderLeft: '4px solid #DC2626', background: '#FEF2F2' }}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-bold uppercase tracking-wider" style={{ color: '#DC2626' }}>⚠️ Lowest Manhours Branch</div>
+                  <div className="font-display font-bold text-xl mt-1 text-slate-800">{lowBranch ? lowBranch.key : '—'}</div>
+                </div>
+                <div className="text-right">
+                  <div className="font-display font-bold text-2xl" style={{ color: '#DC2626' }}>{lowBranch ? lowBranch.hours.toLocaleString() : 0}</div>
+                  <div className="text-xs text-slate-500">manhours · {lowBranch ? lowBranch.avg : 0}h/emp</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Summary table */}
+          <div className="card p-5">
+            <div className="flex items-center gap-3 flex-wrap mb-4">
+              <h3 className="font-display font-bold text-sm text-[#153F90]">Manhours Summary</h3>
+              <span className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">View by:</span>
+              <select value={viewBy} onChange={e => setViewBy(e.target.value as any)}
+                className="px-3 py-1.5 rounded-full text-xs font-bold border border-slate-200 text-slate-700 bg-white focus:border-[#153F90] outline-none">
+                <option value="Branch">Branch</option>
+                <option value="Grade">Grade</option>
+                <option value="Month">Month</option>
+              </select>
+              <span className="text-xs text-slate-400 ml-auto">Avg = Total Manhours ÷ Total Employees</span>
             </div>
 
             <div className="overflow-x-auto max-h-[460px] overflow-y-auto">
@@ -222,15 +265,22 @@ export default function ManhoursPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {summary.map(r => (
-                    <tr key={r.key} className="hover:bg-slate-50">
-                      <td className="px-4 py-2.5 font-semibold">{r.key}</td>
-                      <td className="px-4 py-2.5 text-center text-slate-600">{r.emp.toLocaleString()}</td>
-                      <td className="px-4 py-2.5 text-center font-semibold" style={{ color: '#D97706' }}>{r.hours.toLocaleString()}</td>
-                      <td className="px-4 py-2.5 text-center font-bold" style={{ color: r.avg >= 8 ? '#16A34A' : '#153F90' }}>{r.avg}h</td>
-                      <td className="px-4 py-2.5 text-center text-slate-600">{r.sessions.toLocaleString()}</td>
-                    </tr>
-                  ))}
+                  {summary.map(r => {
+                    const isTop = viewBy === 'Branch' && topBranch && r.key === topBranch.key
+                    const isLow = viewBy === 'Branch' && lowBranch && r.key === lowBranch.key
+                    const bg = isTop ? '#F0FDF4' : isLow ? '#FEF2F2' : undefined
+                    return (
+                      <tr key={r.key} className="hover:bg-slate-50" style={bg ? { background: bg } : undefined}>
+                        <td className="px-4 py-2.5 font-semibold">
+                          {isTop && <span className="mr-1">🏆</span>}{isLow && <span className="mr-1">⚠️</span>}{r.key}
+                        </td>
+                        <td className="px-4 py-2.5 text-center text-slate-600">{r.emp.toLocaleString()}</td>
+                        <td className="px-4 py-2.5 text-center font-semibold" style={{ color: '#D97706' }}>{r.hours.toLocaleString()}</td>
+                        <td className="px-4 py-2.5 text-center font-bold" style={{ color: r.avg >= 8 ? '#16A34A' : '#153F90' }}>{r.avg}h</td>
+                        <td className="px-4 py-2.5 text-center text-slate-600">{r.sessions.toLocaleString()}</td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
                 <tfoot>
                   <tr className="font-bold" style={{ background: '#EAF0FB' }}>
@@ -244,7 +294,6 @@ export default function ManhoursPage() {
               </table>
               {summary.length === 0 && <div className="text-center py-10 text-slate-400 text-sm">No data for this filter.</div>}
             </div>
-            <p className="text-xs text-slate-400 mt-3">Avg Hrs / Employee = Total Manhours ÷ Total Employees (all employees, whether trained or not).</p>
           </div>
 
           {/* Charts */}
