@@ -16,6 +16,17 @@ function sortMonths(list: string[]) {
   })
 }
 
+// Convert decimal hours -> "2 hr 42 min"
+function fmtHM(hours: number) {
+  const totalMin = Math.round((Number(hours) || 0) * 60)
+  const h = Math.floor(totalMin / 60)
+  const m = totalMin % 60
+  if (h === 0 && m === 0) return '0 min'
+  if (h === 0) return `${m} min`
+  if (m === 0) return `${h} hr`
+  return `${h} hr ${m} min`
+}
+
 async function fetchAllRows(table: string, applyFilters?: (q: any) => any) {
   const pageSize = 1000
   let from = 0
@@ -85,16 +96,16 @@ export default function ManhoursPage() {
     setLoading(false)
   }
 
-  // headline totals
+  // headline totals (avg kept raw for precise hr+min formatting)
   const totals = useMemo(() => {
     const totalEmployees = employees.length
     const totalHours = Math.round(training.reduce((a: number, r: any) => a + (Number(r.total_man_hours) || 0), 0))
     const sessions = training.filter((r: any) => (Number(r.total_man_hours) || 0) > 0).length
-    const avg = totalEmployees ? +(totalHours / totalEmployees).toFixed(1) : 0
+    const avg = totalEmployees ? totalHours / totalEmployees : 0
     return { totalEmployees, totalHours, sessions, avg }
   }, [training, employees])
 
-  // per-branch aggregation (for highlights + branch view)
+  // per-branch aggregation
   const branchAgg = useMemo(() => {
     const empCount: Record<string, number> = {}
     employees.forEach((e: any) => { const k = String(e.branch || 'Unknown').trim(); empCount[k] = (empCount[k] || 0) + 1 })
@@ -109,16 +120,17 @@ export default function ManhoursPage() {
     const keys = [...new Set([...Object.keys(empCount), ...Object.keys(agg)])]
     return keys.map(k => {
       const e = empCount[k] || 0, h = agg[k]?.hours || 0
-      return { key: k, emp: e, hours: Math.round(h), sessions: agg[k]?.sessions || 0, avg: e ? +(h / e).toFixed(1) : 0 }
+      return { key: k, emp: e, hours: Math.round(h), sessions: agg[k]?.sessions || 0, avg: e ? h / e : 0 }
     }).filter(r => r.emp > 0)
   }, [training, employees])
 
-  const topBranch = useMemo(() => branchAgg.length ? branchAgg.reduce((a, b) => b.hours > a.hours ? b : a) : null, [branchAgg])
-  const lowBranch = useMemo(() => branchAgg.length ? branchAgg.reduce((a, b) => b.hours < a.hours ? b : a) : null, [branchAgg])
+  // Top / Lowest by AVG hrs/employee
+  const topBranch = useMemo(() => branchAgg.length ? branchAgg.reduce((a, b) => b.avg > a.avg ? b : a) : null, [branchAgg])
+  const lowBranch = useMemo(() => branchAgg.length ? branchAgg.reduce((a, b) => b.avg < a.avg ? b : a) : null, [branchAgg])
 
-  // summary table by dimension
+  // summary table
   const summary = useMemo(() => {
-    if (viewBy === 'Branch') return [...branchAgg].sort((a, b) => b.hours - a.hours)
+    if (viewBy === 'Branch') return [...branchAgg].sort((a, b) => b.avg - a.avg)
     if (viewBy === 'Month') {
       const totalEmp = employees.length
       const byM: Record<string, { hours: number; sessions: number }> = {}
@@ -128,9 +140,8 @@ export default function ManhoursPage() {
         const h = Number(r.total_man_hours) || 0
         byM[m].hours += h; if (h > 0) byM[m].sessions++
       })
-      return sortMonths(Object.keys(byM)).map(m => ({ key: m, emp: totalEmp, hours: Math.round(byM[m].hours), sessions: byM[m].sessions, avg: totalEmp ? +(byM[m].hours / totalEmp).toFixed(1) : 0 }))
+      return sortMonths(Object.keys(byM)).map(m => ({ key: m, emp: totalEmp, hours: Math.round(byM[m].hours), sessions: byM[m].sessions, avg: totalEmp ? byM[m].hours / totalEmp : 0 }))
     }
-    // Grade
     const empCount: Record<string, number> = {}
     employees.forEach((e: any) => { const k = String(e.grade || 'Unknown').trim(); empCount[k] = (empCount[k] || 0) + 1 })
     const agg: Record<string, { hours: number; sessions: number }> = {}
@@ -143,8 +154,8 @@ export default function ManhoursPage() {
     const keys = [...new Set([...Object.keys(empCount), ...Object.keys(agg)])]
     return keys.map(k => {
       const e = empCount[k] || 0, h = agg[k]?.hours || 0
-      return { key: k, emp: e, hours: Math.round(h), sessions: agg[k]?.sessions || 0, avg: e ? +(h / e).toFixed(1) : 0 }
-    }).sort((a, b) => b.hours - a.hours)
+      return { key: k, emp: e, hours: Math.round(h), sessions: agg[k]?.sessions || 0, avg: e ? h / e : 0 }
+    }).sort((a, b) => b.avg - a.avg)
   }, [viewBy, branchAgg, training, employees])
 
   // charts
@@ -158,13 +169,13 @@ export default function ManhoursPage() {
     const totalEmp = employees.length
     const byMonth: Record<string, number> = {}
     scopedMonthRows.forEach((r: any) => { if (r.month) byMonth[r.month] = (byMonth[r.month] || 0) + (Number(r.total_man_hours) || 0) })
-    return sortMonths(Object.keys(byMonth)).map(m => ({ month: m, avg: totalEmp ? +(byMonth[m] / totalEmp).toFixed(2) : 0 }))
+    return sortMonths(Object.keys(byMonth)).map(m => ({ month: m, avg: totalEmp ? +(byMonth[m] / totalEmp).toFixed(3) : 0 }))
   }, [scopedMonthRows, employees])
 
   const kpiCards = [
     { label: 'Total Employees', value: totals.totalEmployees.toLocaleString(), color: '#153F90', icon: '👥' },
     { label: 'Total Manhours', value: totals.totalHours.toLocaleString(), color: '#D97706', icon: '⏱' },
-    { label: 'Avg Hrs/Employee', value: `${totals.avg}h`, color: '#7C3AED', icon: '📈' },
+    { label: 'Avg Hrs/Employee', value: fmtHM(totals.avg), color: '#7C3AED', icon: '📈' },
     { label: 'Total Sessions', value: totals.sessions.toLocaleString(), color: '#0891B2', icon: '📚' },
     { label: 'GRI 404-1 Target', value: '≥ 8 hrs', color: totals.avg >= 8 ? '#16A34A' : '#DC2626', icon: '🎯' },
   ]
@@ -211,29 +222,29 @@ export default function ManhoursPage() {
             ))}
           </div>
 
-          {/* Top / Lowest branch highlight */}
+          {/* Top / Lowest branch by Avg Hrs/Employee */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="card p-5" style={{ borderLeft: '4px solid #16A34A', background: '#F0FDF4' }}>
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-xs font-bold uppercase tracking-wider" style={{ color: '#16A34A' }}>🏆 Top Manhours Branch</div>
+                  <div className="text-xs font-bold uppercase tracking-wider" style={{ color: '#16A34A' }}>🏆 Top Avg Hrs / Employee</div>
                   <div className="font-display font-bold text-xl mt-1 text-slate-800">{topBranch ? topBranch.key : '—'}</div>
                 </div>
                 <div className="text-right">
-                  <div className="font-display font-bold text-2xl" style={{ color: '#16A34A' }}>{topBranch ? topBranch.hours.toLocaleString() : 0}</div>
-                  <div className="text-xs text-slate-500">manhours · {topBranch ? topBranch.avg : 0}h/emp</div>
+                  <div className="font-display font-bold text-2xl" style={{ color: '#16A34A' }}>{topBranch ? fmtHM(topBranch.avg) : '—'}</div>
+                  <div className="text-xs text-slate-500">per employee · {topBranch ? topBranch.hours.toLocaleString() : 0} total hrs</div>
                 </div>
               </div>
             </div>
             <div className="card p-5" style={{ borderLeft: '4px solid #DC2626', background: '#FEF2F2' }}>
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-xs font-bold uppercase tracking-wider" style={{ color: '#DC2626' }}>⚠️ Lowest Manhours Branch</div>
+                  <div className="text-xs font-bold uppercase tracking-wider" style={{ color: '#DC2626' }}>⚠️ Lowest Avg Hrs / Employee</div>
                   <div className="font-display font-bold text-xl mt-1 text-slate-800">{lowBranch ? lowBranch.key : '—'}</div>
                 </div>
                 <div className="text-right">
-                  <div className="font-display font-bold text-2xl" style={{ color: '#DC2626' }}>{lowBranch ? lowBranch.hours.toLocaleString() : 0}</div>
-                  <div className="text-xs text-slate-500">manhours · {lowBranch ? lowBranch.avg : 0}h/emp</div>
+                  <div className="font-display font-bold text-2xl" style={{ color: '#DC2626' }}>{lowBranch ? fmtHM(lowBranch.avg) : '—'}</div>
+                  <div className="text-xs text-slate-500">per employee · {lowBranch ? lowBranch.hours.toLocaleString() : 0} total hrs</div>
                 </div>
               </div>
             </div>
@@ -276,7 +287,7 @@ export default function ManhoursPage() {
                         </td>
                         <td className="px-4 py-2.5 text-center text-slate-600">{r.emp.toLocaleString()}</td>
                         <td className="px-4 py-2.5 text-center font-semibold" style={{ color: '#D97706' }}>{r.hours.toLocaleString()}</td>
-                        <td className="px-4 py-2.5 text-center font-bold" style={{ color: r.avg >= 8 ? '#16A34A' : '#153F90' }}>{r.avg}h</td>
+                        <td className="px-4 py-2.5 text-center font-bold" style={{ color: r.avg >= 8 ? '#16A34A' : '#153F90' }}>{fmtHM(r.avg)}</td>
                         <td className="px-4 py-2.5 text-center text-slate-600">{r.sessions.toLocaleString()}</td>
                       </tr>
                     )
@@ -287,7 +298,7 @@ export default function ManhoursPage() {
                     <td className="px-4 py-3">Grand Total</td>
                     <td className="px-4 py-3 text-center">{totals.totalEmployees.toLocaleString()}</td>
                     <td className="px-4 py-3 text-center" style={{ color: '#D97706' }}>{totals.totalHours.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-center" style={{ color: totals.avg >= 8 ? '#16A34A' : '#153F90' }}>{totals.avg}h</td>
+                    <td className="px-4 py-3 text-center" style={{ color: totals.avg >= 8 ? '#16A34A' : '#153F90' }}>{fmtHM(totals.avg)}</td>
                     <td className="px-4 py-3 text-center">{totals.sessions.toLocaleString()}</td>
                   </tr>
                 </tfoot>
@@ -316,7 +327,7 @@ export default function ManhoursPage() {
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                   <XAxis dataKey="month" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip formatter={(v: any) => [v + ' hrs/emp', 'Avg']} />
+                  <Tooltip formatter={(v: any) => [fmtHM(v), 'Avg / emp']} />
                   <Line type="monotone" dataKey="avg" stroke="#153F90" strokeWidth={2} dot={{ fill: '#153F90', r: 4 }} />
                 </LineChart>
               </ResponsiveContainer>
