@@ -11,9 +11,9 @@ const navLinks = [
   { href: '/library', label: '📚 Content Library' },
   { href: '/tni', label: '🎯 Training Needs' },
   { href: '/report', label: '📄 Report' },
+  { href: '/upload', label: '📤 Upload Data' },
 ]
 const adminLinks = [
-  { href: '/upload', label: '📤 Upload Data' },
   { href: '/admin', label: '🔍 Admin Panel' },
 ]
 export default function Navbar() {
