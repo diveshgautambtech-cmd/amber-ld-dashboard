@@ -37,6 +37,16 @@ function sortMonths(list: string[]) {
   })
 }
 
+function fmtHM(hours: number) {
+  const totalMin = Math.round((Number(hours) || 0) * 60)
+  const h = Math.floor(totalMin / 60)
+  const m = totalMin % 60
+  if (h === 0 && m === 0) return '0 min'
+  if (h === 0) return `${m} min`
+  if (m === 0) return `${h} hr`
+  return `${h} hr ${m} min`
+}
+
 async function fetchAllRows(table: string, applyFilters?: (q: any) => any) {
   const pageSize = 1000
   let from = 0
@@ -66,6 +76,7 @@ export default function DashboardPage() {
   const [months, setMonths] = useState<string[]>([])
   const [grades, setGrades] = useState<string[]>([])
 
+  const [rankView, setRankView] = useState<'top' | 'bottom'>('top')
   const [empSearch, setEmpSearch] = useState('')
   const [empStatusFilter, setEmpStatusFilter] = useState<'all' | 'trained' | 'pending'>('all')
 
@@ -80,26 +91,21 @@ export default function DashboardPage() {
         if (period !== 'All') qq = qq.eq('month', period)
         return qq
       })
-
       let employees = await fetchAllRows('employee_master', (q) => {
         let qq = q
         if (user?.role === 'spoc' && user.branch) qq = qq.eq('branch', user.branch)
         return qq
       })
-
       const monthRows = await fetchAllRows('training_mis', (q) => {
         let qq = q
         if (user?.role === 'spoc' && user.branch) qq = qq.eq('branch', user.branch)
         return qq
       })
-
       if (!training || !employees) { setLoading(false); return }
 
-      // Filter options (from full employee master, unaffected by current grade selection)
       setMonths(sortMonths([...new Set(monthRows.map((r: any) => r.month).filter(Boolean))] as string[]))
       setGrades([...new Set(employees.map((e: any) => e.grade).filter(Boolean))].sort() as string[])
 
-      // ---- Grade scoping (robust: by emp_code membership from employee_master) ----
       if (grade !== 'All') {
         const validCodes = new Set<string>()
         employees.forEach((e: any) => { if ((e.grade || '') === grade && e.emp_code) validCodes.add(String(e.emp_code).toLowerCase()) })
@@ -107,7 +113,6 @@ export default function DashboardPage() {
         training = training.filter((r: any) => r.emp_code && validCodes.has(String(r.emp_code).toLowerCase()))
       }
 
-      // Aggregate training by employee
       const trainingMap: Record<string, { hours: number; trained: boolean; trainings: Set<string> }> = {}
       training.forEach((r: any) => {
         const code = r.emp_code?.toLowerCase()
@@ -121,15 +126,13 @@ export default function DashboardPage() {
       const total = employees.length
       const trained = employees.filter((e: any) => trainingMap[e.emp_code?.toLowerCase()]?.trained).length
       const totalHours = Object.values(trainingMap).reduce((a, b) => a + b.hours, 0)
-
       setStats({
         total, trained,
         coverage: total > 0 ? Math.round((trained / total) * 100) : 0,
         totalHours: Math.round(totalHours),
-        avgHours: total > 0 ? Math.round(totalHours / total) : 0,
+        avgHours: total > 0 ? totalHours / total : 0,
       })
 
-      // Branch breakdown
       const byBranch: Record<string, BranchStat> = {}
       employees.forEach((e: any) => {
         const b = e.branch || 'Unknown'
@@ -145,7 +148,6 @@ export default function DashboardPage() {
         hours: Math.round(b.hours),
       })).sort((a, b) => b.coverage - a.coverage))
 
-      // Gender breakdown
       const byGender: Record<string, { total: number; trained: number }> = {}
       employees.forEach((e: any) => {
         const g = e.gender || 'Unknown'
@@ -158,28 +160,32 @@ export default function DashboardPage() {
         coverage: v.total > 0 ? Math.round((v.trained / v.total) * 100) : 0,
       })))
 
-      // Employee-wise rows
       const rows: EmpRow[] = employees.map((e: any) => {
         const t = trainingMap[e.emp_code?.toLowerCase()]
         return {
-          emp_code: e.emp_code || '',
-          emp_name: e.emp_name || '',
-          branch: e.branch || 'Unknown',
-          grade: e.grade || '',
-          gender: e.gender || '',
-          trained: !!t?.trained,
-          hours: Math.round(t?.hours || 0),
+          emp_code: e.emp_code || '', emp_name: e.emp_name || '', branch: e.branch || 'Unknown',
+          grade: e.grade || '', gender: e.gender || '',
+          trained: !!t?.trained, hours: Math.round(t?.hours || 0),
           trainings: t ? Array.from(t.trainings) : [],
         }
-      }).sort((a, b) => {
-        if (a.trained !== b.trained) return a.trained ? -1 : 1
-        return a.branch.localeCompare(b.branch)
-      })
+      }).sort((a, b) => (a.trained !== b.trained ? (a.trained ? -1 : 1) : a.branch.localeCompare(b.branch)))
       setEmpRows(rows)
-
     } catch (err) { console.error(err) }
     setLoading(false)
   }
+
+  // Top / Lowest coverage branch
+  const withEmp = useMemo(() => branchData.filter(b => b.total > 0), [branchData])
+  const topBranch = useMemo(() => withEmp.length ? withEmp.reduce((a, b) => b.coverage > a.coverage ? b : a) : null, [withEmp])
+  const lowBranch = useMemo(() => withEmp.length ? withEmp.reduce((a, b) => b.coverage < a.coverage ? b : a) : null, [withEmp])
+
+  // Ranked 10 (top or bottom) for chart + table
+  const ranked = useMemo(() => {
+    const s = [...withEmp]
+    if (rankView === 'top') s.sort((a, b) => b.coverage - a.coverage || b.total - a.total)
+    else s.sort((a, b) => a.coverage - b.coverage || b.total - a.total)
+    return s.slice(0, 10)
+  }, [withEmp, rankView])
 
   const filteredEmpRows = useMemo(() => {
     const term = empSearch.trim().toLowerCase()
@@ -187,28 +193,17 @@ export default function DashboardPage() {
       if (empStatusFilter === 'trained' && !r.trained) return false
       if (empStatusFilter === 'pending' && r.trained) return false
       if (!term) return true
-      return (
-        r.emp_code.toLowerCase().includes(term) ||
-        r.emp_name.toLowerCase().includes(term) ||
-        r.branch.toLowerCase().includes(term)
-      )
+      return r.emp_code.toLowerCase().includes(term) || r.emp_name.toLowerCase().includes(term) || r.branch.toLowerCase().includes(term)
     })
   }, [empRows, empSearch, empStatusFilter])
 
   function exportEmpCSV() {
     const header = ['Employee Code', 'Name', 'Branch', 'Grade', 'Gender', 'Status', 'Total Hours', 'Trainings']
-    const lines = filteredEmpRows.map(r => [
-      r.emp_code, r.emp_name, r.branch, r.grade, r.gender,
-      r.trained ? 'Trained' : 'Pending', r.hours,
-      r.trainings.join('; '),
-    ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
+    const lines = filteredEmpRows.map(r => [r.emp_code, r.emp_name, r.branch, r.grade, r.gender, r.trained ? 'Trained' : 'Pending', r.hours, r.trainings.join('; ')].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
     const csv = [header.join(','), ...lines].join('\n')
     const blob = new Blob([csv], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `employee_coverage_${period}_${grade}.csv`
-    a.click()
+    const a = document.createElement('a'); a.href = url; a.download = `employee_coverage_${period}_${grade}.csv`; a.click()
     URL.revokeObjectURL(url)
   }
 
@@ -217,16 +212,15 @@ export default function DashboardPage() {
     { label: 'Trained', value: stats.trained.toLocaleString(), color: '#16A34A', icon: '✅' },
     { label: 'Coverage %', value: `${stats.coverage}%`, color: stats.coverage >= 80 ? '#16A34A' : stats.coverage >= 60 ? '#D97706' : '#DC2626', icon: '📊' },
     { label: 'Total Manhours', value: stats.totalHours.toLocaleString(), color: '#D97706', icon: '⏱' },
-    { label: 'Avg Hrs/Employee', value: `${stats.avgHours}h`, color: '#7C3AED', icon: '📈' },
+    { label: 'Avg Hrs/Employee', value: fmtHM(stats.avgHours), color: '#7C3AED', icon: '📈' },
   ]
+
+  const rankLabel = rankView === 'top' ? 'Top 10 Coverage Units' : 'Bottom 10 Coverage Units'
 
   return (
     <div className="space-y-6">
       {user?.role === 'spoc' && (
-        <div className="spoc-banner">
-          <span>🔒</span>
-          <span>Viewing data for <strong>{user.branch}</strong> only</span>
-        </div>
+        <div className="spoc-banner"><span>🔒</span><span>Viewing data for <strong>{user.branch}</strong> only</span></div>
       )}
 
       {/* Filters */}
@@ -239,14 +233,12 @@ export default function DashboardPage() {
             {m}
           </button>
         ))}
-
         <span className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-2">Grade:</span>
         <select value={grade} onChange={e => setGrade(e.target.value)}
           className="px-3 py-1.5 rounded-full text-xs font-bold border border-slate-200 text-slate-600 bg-white focus:border-[#153F90] outline-none">
           <option value="All">All Grades</option>
           {grades.map(g => <option key={g} value={g}>{g}</option>)}
         </select>
-
         <button onClick={() => downloadExcelReport(user, period, grade)}
           className="ml-auto px-3 py-1.5 rounded-full text-xs font-bold border border-green-600 text-green-700 hover:bg-green-600 hover:text-white transition-all">
           ⬇ Export Excel
@@ -268,25 +260,67 @@ export default function DashboardPage() {
             ))}
           </div>
 
-          {/* Charts row */}
+          {/* Top / Lowest coverage highlight */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="card p-5" style={{ borderLeft: '4px solid #16A34A', background: '#F0FDF4' }}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-bold uppercase tracking-wider" style={{ color: '#16A34A' }}>🏆 Highest Coverage Branch</div>
+                  <div className="font-display font-bold text-xl mt-1 text-slate-800">{topBranch ? topBranch.branch : '—'}</div>
+                </div>
+                <div className="text-right">
+                  <div className="font-display font-bold text-2xl" style={{ color: '#16A34A' }}>{topBranch ? topBranch.coverage : 0}%</div>
+                  <div className="text-xs text-slate-500">{topBranch ? `${topBranch.trained}/${topBranch.total} trained` : ''}</div>
+                </div>
+              </div>
+            </div>
+            <div className="card p-5" style={{ borderLeft: '4px solid #DC2626', background: '#FEF2F2' }}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-bold uppercase tracking-wider" style={{ color: '#DC2626' }}>⚠️ Lowest Coverage Branch</div>
+                  <div className="font-display font-bold text-xl mt-1 text-slate-800">{lowBranch ? lowBranch.branch : '—'}</div>
+                </div>
+                <div className="text-right">
+                  <div className="font-display font-bold text-2xl" style={{ color: '#DC2626' }}>{lowBranch ? lowBranch.coverage : 0}%</div>
+                  <div className="text-xs text-slate-500">{lowBranch ? `${lowBranch.trained}/${lowBranch.total} trained` : ''}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Top10 / Bottom10 toggle */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Show:</span>
+            <button onClick={() => setRankView('top')}
+              className={`px-4 py-1.5 rounded-full text-xs font-bold border transition-all
+                ${rankView === 'top' ? 'bg-[#16A34A] text-white border-[#16A34A]' : 'bg-white text-slate-600 border-slate-200 hover:border-[#16A34A]'}`}>
+              🔝 Top 10 Units
+            </button>
+            <button onClick={() => setRankView('bottom')}
+              className={`px-4 py-1.5 rounded-full text-xs font-bold border transition-all
+                ${rankView === 'bottom' ? 'bg-[#DC2626] text-white border-[#DC2626]' : 'bg-white text-slate-600 border-slate-200 hover:border-[#DC2626]'}`}>
+              🔻 Bottom 10 Units
+            </button>
+          </div>
+
+          {/* Chart + Gender */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="card p-5">
-              <h3 className="font-display font-bold text-sm text-[#153F90] mb-4">Branch Coverage %</h3>
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={branchData.slice(0, 12)} layout="vertical" margin={{ left: 80 }}>
+              <h3 className="font-display font-bold text-sm text-[#153F90] mb-4">{rankLabel} — Coverage %</h3>
+              <ResponsiveContainer width="100%" height={320}>
+                <BarChart data={ranked} layout="vertical" margin={{ left: 90 }}>
                   <XAxis type="number" domain={[0, 100]} tickFormatter={v => `${v}%`} tick={{ fontSize: 11 }} />
-                  <YAxis type="category" dataKey="branch" tick={{ fontSize: 11 }} width={80} />
+                  <YAxis type="category" dataKey="branch" tick={{ fontSize: 11 }} width={90} />
                   <Tooltip formatter={(v: any) => [`${v}%`, 'Coverage']} />
-                  <Bar dataKey="coverage" fill="#153F90" radius={[0, 4, 4, 0]} barSize={16} />
+                  <Bar dataKey="coverage" fill={rankView === 'top' ? '#16A34A' : '#DC2626'} radius={[0, 4, 4, 0]} barSize={16} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
-
             <div className="card p-5">
               <h3 className="font-display font-bold text-sm text-[#153F90] mb-4">Gender-wise Trained Employees</h3>
-              <ResponsiveContainer width="100%" height={280}>
+              <ResponsiveContainer width="100%" height={320}>
                 <PieChart>
-                  <Pie data={genderData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={100} label={(entry: any) => `${entry.name}: ${entry.coverage}%`}>
+                  <Pie data={genderData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={110} label={(entry: any) => `${entry.name}: ${entry.coverage}%`}>
                     {genderData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
                   </Pie>
                   <Legend />
@@ -296,13 +330,14 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Branch table */}
+          {/* Ranked branch table */}
           <div className="card p-5">
-            <h3 className="font-display font-bold text-sm text-[#153F90] mb-4">Branch Performance Matrix</h3>
+            <h3 className="font-display font-bold text-sm text-[#153F90] mb-4">{rankLabel}</h3>
             <div className="overflow-x-auto">
               <table className="w-full text-sm border-collapse">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 text-xs uppercase tracking-wider font-semibold">
+                    <th className="px-4 py-3 text-left">Rank</th>
                     <th className="px-4 py-3 text-left">Branch / Unit</th>
                     <th className="px-4 py-3 text-center">Total</th>
                     <th className="px-4 py-3 text-center">Trained</th>
@@ -312,18 +347,19 @@ export default function DashboardPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {branchData.map(b => {
+                  {ranked.map((b, i) => {
                     const color = b.coverage >= 80 ? '#16A34A' : b.coverage >= 60 ? '#D97706' : '#DC2626'
                     const status = b.coverage >= 80 ? 'Excellent' : b.coverage >= 60 ? 'On Track' : b.coverage >= 40 ? 'Needs Attention' : 'Critical Gap'
                     return (
                       <tr key={b.branch} className="hover:bg-slate-50">
+                        <td className="px-4 py-3 font-bold text-slate-400">#{i + 1}</td>
                         <td className="px-4 py-3 font-semibold">{b.branch}</td>
                         <td className="px-4 py-3 text-center">{b.total}</td>
                         <td className="px-4 py-3 text-center font-bold text-green-700">{b.trained}</td>
                         <td className="px-4 py-3 text-center font-bold text-red-600">{b.total - b.trained}</td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
-                            <div className="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
+                            <div className="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden" style={{ minWidth: 60 }}>
                               <div className="h-full rounded-full" style={{ width: `${b.coverage}%`, background: color }} />
                             </div>
                             <span className="text-xs font-bold w-10" style={{ color }}>{b.coverage}%</span>
@@ -336,11 +372,7 @@ export default function DashboardPage() {
                   })}
                 </tbody>
               </table>
-              {branchData.length === 0 && (
-                <div className="text-center py-12 text-slate-400 text-sm">
-                  No data for this filter.
-                </div>
-              )}
+              {ranked.length === 0 && <div className="text-center py-12 text-slate-400 text-sm">No data for this filter.</div>}
             </div>
           </div>
 
@@ -354,12 +386,8 @@ export default function DashboardPage() {
                 </span>
               </h3>
               <div className="flex items-center gap-2 flex-wrap">
-                <input
-                  value={empSearch}
-                  onChange={e => setEmpSearch(e.target.value)}
-                  placeholder="Search name / code / branch"
-                  className="px-3 py-1.5 rounded-lg text-xs border border-slate-200 focus:border-[#153F90] outline-none w-56"
-                />
+                <input value={empSearch} onChange={e => setEmpSearch(e.target.value)} placeholder="Search name / code / branch"
+                  className="px-3 py-1.5 rounded-lg text-xs border border-slate-200 focus:border-[#153F90] outline-none w-56" />
                 {(['all', 'trained', 'pending'] as const).map(s => (
                   <button key={s} onClick={() => setEmpStatusFilter(s)}
                     className={`px-3 py-1.5 rounded-full text-xs font-bold border capitalize transition-all
@@ -373,7 +401,6 @@ export default function DashboardPage() {
                 </button>
               </div>
             </div>
-
             <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
               <table className="w-full text-sm border-collapse">
                 <thead className="sticky top-0">
@@ -395,11 +422,9 @@ export default function DashboardPage() {
                       <td className="px-4 py-2.5 text-slate-600">{r.branch}</td>
                       <td className="px-4 py-2.5 text-slate-600 text-xs">{r.grade || '—'}</td>
                       <td className="px-4 py-2.5 text-center">
-                        {r.trained ? (
-                          <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: '#16A34A20', color: '#16A34A' }}>Trained</span>
-                        ) : (
-                          <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: '#DC262620', color: '#DC2626' }}>Pending</span>
-                        )}
+                        {r.trained
+                          ? <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: '#16A34A20', color: '#16A34A' }}>Trained</span>
+                          : <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: '#DC262620', color: '#DC2626' }}>Pending</span>}
                       </td>
                       <td className="px-4 py-2.5 text-center text-slate-600">{r.hours || '—'}</td>
                       <td className="px-4 py-2.5 text-slate-600 text-xs">{r.trainings.join(', ') || '—'}</td>
@@ -407,13 +432,9 @@ export default function DashboardPage() {
                   ))}
                 </tbody>
               </table>
-              {filteredEmpRows.length === 0 && (
-                <div className="text-center py-12 text-slate-400 text-sm">No employees match your filter.</div>
-              )}
+              {filteredEmpRows.length === 0 && <div className="text-center py-12 text-slate-400 text-sm">No employees match your filter.</div>}
               {filteredEmpRows.length > 500 && (
-                <div className="text-center py-3 text-slate-400 text-xs">
-                  Showing first 500 of {filteredEmpRows.length}. Use search/filter or Export CSV for the full list.
-                </div>
+                <div className="text-center py-3 text-slate-400 text-xs">Showing first 500 of {filteredEmpRows.length}. Use search/filter or Export CSV for the full list.</div>
               )}
             </div>
           </div>
