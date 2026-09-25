@@ -76,7 +76,7 @@ export default function DashboardPage() {
   const [months, setMonths] = useState<string[]>([])
   const [grades, setGrades] = useState<string[]>([])
 
-  const [rankView, setRankView] = useState<'top' | 'bottom'>('top')
+  const [rankView, setRankView] = useState<'top' | 'bottom' | 'all'>('top')
   const [empSearch, setEmpSearch] = useState('')
   const [empStatusFilter, setEmpStatusFilter] = useState<'all' | 'trained' | 'pending'>('all')
 
@@ -182,9 +182,9 @@ export default function DashboardPage() {
   // Ranked 10 (top or bottom) for chart + table
   const ranked = useMemo(() => {
     const s = [...withEmp]
-    if (rankView === 'top') s.sort((a, b) => b.coverage - a.coverage || b.total - a.total)
-    else s.sort((a, b) => a.coverage - b.coverage || b.total - a.total)
-    return s.slice(0, 10)
+    if (rankView === 'bottom') s.sort((a, b) => a.coverage - b.coverage || b.total - a.total)
+    else s.sort((a, b) => b.coverage - a.coverage || b.total - a.total)
+    return rankView === 'all' ? s : s.slice(0, 10)
   }, [withEmp, rankView])
 
   const filteredEmpRows = useMemo(() => {
@@ -215,7 +215,8 @@ export default function DashboardPage() {
     { label: 'Avg Hrs/Employee', value: fmtHM(stats.avgHours), color: '#7C3AED', icon: '📈' },
   ]
 
-  const rankLabel = rankView === 'top' ? 'Top 10 Coverage Units' : 'Bottom 10 Coverage Units'
+  const rankLabel = rankView === 'top' ? 'Top 10 Coverage Units' : rankView === 'bottom' ? 'Bottom 10 Coverage Units' : 'All Coverage Units'
+  const rankColor = rankView === 'bottom' ? '#DC2626' : rankView === 'all' ? '#153F90' : '#16A34A'
 
   return (
     <div className="space-y-6">
@@ -301,20 +302,27 @@ export default function DashboardPage() {
                 ${rankView === 'bottom' ? 'bg-[#DC2626] text-white border-[#DC2626]' : 'bg-white text-slate-600 border-slate-200 hover:border-[#DC2626]'}`}>
               🔻 Bottom 10 Units
             </button>
+            <button onClick={() => setRankView('all')}
+              className={`px-4 py-1.5 rounded-full text-xs font-bold border transition-all
+                ${rankView === 'all' ? 'bg-[#153F90] text-white border-[#153F90]' : 'bg-white text-slate-600 border-slate-200 hover:border-[#153F90]'}`}>
+              📋 All Units
+            </button>
           </div>
 
           {/* Chart + Gender */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="card p-5">
               <h3 className="font-display font-bold text-sm text-[#153F90] mb-4">{rankLabel} — Coverage %</h3>
-              <ResponsiveContainer width="100%" height={320}>
-                <BarChart data={ranked} layout="vertical" margin={{ left: 90 }}>
-                  <XAxis type="number" domain={[0, 100]} tickFormatter={v => `${v}%`} tick={{ fontSize: 11 }} />
-                  <YAxis type="category" dataKey="branch" tick={{ fontSize: 11 }} width={90} />
-                  <Tooltip formatter={(v: any) => [`${v}%`, 'Coverage']} />
-                  <Bar dataKey="coverage" fill={rankView === 'top' ? '#16A34A' : '#DC2626'} radius={[0, 4, 4, 0]} barSize={16} />
-                </BarChart>
-              </ResponsiveContainer>
+              <div style={{ maxHeight: 420, overflowY: rankView === 'all' ? 'auto' : 'visible' }}>
+                <ResponsiveContainer width="100%" height={rankView === 'all' ? Math.max(320, ranked.length * 24) : 320}>
+                  <BarChart data={ranked} layout="vertical" margin={{ left: 90 }}>
+                    <XAxis type="number" domain={[0, 100]} tickFormatter={v => `${v}%`} tick={{ fontSize: 11 }} />
+                    <YAxis type="category" dataKey="branch" tick={{ fontSize: 10 }} width={90} />
+                    <Tooltip formatter={(v: any) => [`${v}%`, 'Coverage']} />
+                    <Bar dataKey="coverage" fill={rankColor} radius={[0, 4, 4, 0]} barSize={14} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </div>
             <div className="card p-5">
               <h3 className="font-display font-bold text-sm text-[#153F90] mb-4">Gender-wise Trained Employees</h3>
@@ -332,10 +340,10 @@ export default function DashboardPage() {
 
           {/* Ranked branch table */}
           <div className="card p-5">
-            <h3 className="font-display font-bold text-sm text-[#153F90] mb-4">{rankLabel}</h3>
-            <div className="overflow-x-auto">
+            <h3 className="font-display font-bold text-sm text-[#153F90] mb-4">{rankLabel} <span className="text-xs font-normal text-slate-400">({ranked.length} units)</span></h3>
+            <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
               <table className="w-full text-sm border-collapse">
-                <thead>
+                <thead className="sticky top-0">
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 text-xs uppercase tracking-wider font-semibold">
                     <th className="px-4 py-3 text-left">Rank</th>
                     <th className="px-4 py-3 text-left">Branch / Unit</th>
