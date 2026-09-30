@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth'
 import { supabase } from '@/lib/supabase'
 import PageShell from '@/components/dashboard/PageShell'
+import * as XLSX from 'xlsx'
 
 export default function AdminPage() {
   const { user, loading } = useAuth()
@@ -29,6 +30,24 @@ export default function AdminPage() {
     if (sess) setSessions(sess)
     if (spocData) setSpocs(spocData)
     if (pwdData) setPwdLog(pwdData)
+  }
+
+  function downloadSpocList() {
+    if (!spocs.length) return
+    const data = spocs.map((s, i) => ({
+      'Sr.No.': i + 1,
+      'Employee Code': s.emp_code || '',
+      'Name': s.name || '',
+      'Branch': s.branch || '',
+      'Email': s.email || '',
+      'Role': s.role || '',
+    }))
+    const ws = XLSX.utils.json_to_sheet(data)
+    ws['!cols'] = [{ wch: 8 }, { wch: 16 }, { wch: 26 }, { wch: 22 }, { wch: 34 }, { wch: 10 }]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'SPOC Directory')
+    const stamp = new Date().toISOString().slice(0, 10)
+    XLSX.writeFile(wb, `SPOC_Directory_${stamp}.xlsx`)
   }
 
   async function handleResetPassword() {
@@ -96,6 +115,13 @@ export default function AdminPage() {
 
         {tab === 'spocs' && (
           <div className="card p-5">
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px', marginBottom: '12px' }}>
+              <h3 style={{ fontWeight: 700, color: '#153F90', margin: 0 }}>👥 SPOC Directory <span style={{ fontSize: '13px', fontWeight: 400, color: '#94a3b8' }}>({spocs.length} accounts)</span></h3>
+              <button onClick={downloadSpocList}
+                style={{ padding: '8px 16px', borderRadius: '8px', fontWeight: 700, fontSize: '13px', cursor: 'pointer', border: '1px solid #16a34a', background: 'white', color: '#15803d' }}>
+                ⬇ Download Excel
+              </button>
+            </div>
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
                 <thead>
@@ -118,6 +144,7 @@ export default function AdminPage() {
                   ))}
                 </tbody>
               </table>
+              {spocs.length === 0 && <div style={{ textAlign: 'center', padding: '32px', color: '#94a3b8', fontSize: '14px' }}>No SPOCs found.</div>}
             </div>
           </div>
         )}
